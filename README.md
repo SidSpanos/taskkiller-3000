@@ -8,12 +8,9 @@ Useful when a dev server fails to start because something is already holding the
 
 ## Screenshots
 
-> _Screenshots coming soon. Place images in a `/screenshots` folder and link here._
+![Port Process Manager — main window](screenshots/main.png)
 
-<!-- Example:
-![Main window](screenshots/main.png)
-![Kill confirmation](screenshots/kill-confirm.png)
--->
+Port scanner on startup — 8080 (`wslrelay.exe`) and 11434 (`ollama.exe`) detected as OCCUPIED. Double-click any red row to load it into the Find → Verify → Kill workflow below.
 
 ---
 
