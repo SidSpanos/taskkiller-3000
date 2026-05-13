@@ -1,0 +1,3 @@
+# Optional but recommended — enables richer process inspection
+# (exe path, command line, status) compared to the tasklist fallback.
+psutil>=5.9.0

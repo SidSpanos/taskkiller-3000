@@ -5,7 +5,7 @@ A Windows desktop application to identify and kill processes
 that are listening on specific localhost ports (e.g. 3000, 5173, 8080).
 
 Author: Generated for Isidoros
-Requires: Python 3.x, tkinter (bundled with Python), psutil (optional but recommended)
+Requires: Python 3.10+, tkinter (bundled with Python), psutil (optional but recommended)
 
 Install dependency (optional but recommended):
     pip install psutil
@@ -18,7 +18,6 @@ import os
 import re
 import sys
 import subprocess
-import threading
 import webbrowser
 from datetime import datetime
 from tkinter import (
@@ -662,15 +661,11 @@ class PortProcessManager:
         """Run Find PID, then schedule the next tick."""
         if not self.auto_refresh_var.get():
             return
-        # Run in a thread so a slow netstat doesn't freeze the UI
-        threading.Thread(target=self._safe_find_pid, daemon=True).start()
-        self._auto_refresh_job = self.root.after(3000, self._auto_refresh_tick)
-
-    def _safe_find_pid(self):
         try:
             self.find_pid()
         except Exception as exc:
             self.log(f"Auto-refresh error: {exc}", level="ERROR")
+        self._auto_refresh_job = self.root.after(3000, self._auto_refresh_tick)
 
 
 # ---------------------------------------------------------------------------
