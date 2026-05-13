@@ -39,7 +39,7 @@ python --version
 ### 1. Clone or download
 
 ```
-git clone https://github.com/your-username/taskkiller-3000.git
+git clone https://github.com/SidSpanos/taskkiller-3000.git
 cd taskkiller-3000
 ```
 
@@ -200,6 +200,10 @@ taskkiller-3000/
 ├── requirements.txt          # psutil (optional)
 ├── .gitignore
 ├── README.md
+├── CLAUDE.md                 # AI assistant instructions
+├── PROJECT_STATE.md          # Project status and roadmap
+├── screenshots/
+│   └── main.png
 └── .github/
     └── workflows/
         ├── claude.yml            # Claude PR assistant
