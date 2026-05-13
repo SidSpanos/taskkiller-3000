@@ -88,26 +88,46 @@ Double-clicking `run_port_manager.bat` also works from Explorer.
 
 ## Features
 
-- **Find PID** — runs `netstat -ano`, extracts the LISTENING process on the port
-- **Verify Process** — shows name, executable path, command line, and status
-- **Kill Process** — runs `taskkill /F /PID` after confirmation dialog
-- Quick-pick buttons for common ports
+### Port Scanner dashboard
+- Scans 8 common dev ports simultaneously in a single `netstat` pass
+- Shows Port / Status / Process / PID / Type in a live table
+- `OCCUPIED` rows highlighted in red, protected system processes in yellow
+- Double-click any occupied row → loads port into entry and runs Find PID automatically
+- **Scan All** button for manual refresh; auto-refresh checkbox (5s) for live monitoring
+
+### Process Detail (3-step workflow)
+- **1) Find PID** — runs `netstat -ano`, extracts the LISTENING process on the port
+- **2) Verify Process** — shows name, executable path, command line, and status
+- **3) Kill Process** — runs `taskkill /F /PID` after confirmation dialog
+
+### Process classification
+Recognizes and labels: Node.js, Python, Ollama, Docker, Java, Electron, Bun, Browser, Unknown
+
+### Protected process safety
+Hard blocks termination of critical Windows processes (`svchost`, `lsass`, `csrss`, `explorer`, `dwm`, `winlogon`, and others). Shows an error dialog — no confirmation prompt is ever shown for protected processes.
+
+### Other
 - Manual port entry (press Enter to search)
 - Kill all `node.exe` processes shortcut
-- Auto-refresh every 3 seconds (toggle checkbox)
 - Open port in default browser
-- Dark theme with color-coded process names
+- Kill success auto-refreshes the scanner
+- Dark theme with color-coded process names in log output
 
 ---
 
 ## Common development ports
 
+All 8 ports are scanned by the dashboard automatically on startup.
+
 | Port | Typical use |
 |---|---|
 | `3000` | Node.js, React (CRA), Express |
 | `3001` | Secondary React dev server |
+| `4200` | Angular CLI |
+| `5000` | Flask, FastAPI |
 | `5173` | Vite (React, Vue, Svelte) |
-| `8080` | Generic HTTP, Webpack, Java |
+| `8000` | Django, generic HTTP |
+| `8080` | Webpack, Java, generic HTTP |
 | `11434` | Ollama (local AI) |
 
 ---
@@ -178,11 +198,15 @@ You're on Python 3.9 or older. Upgrade to Python 3.10+.
 
 ```
 taskkiller-3000/
-├── port_manager.py       # Main application (single file)
-├── run_port_manager.bat  # Windows launcher
-├── requirements.txt      # psutil (optional)
+├── port_manager.py           # Main application (single file)
+├── run_port_manager.bat      # Windows launcher
+├── requirements.txt          # psutil (optional)
 ├── .gitignore
-└── README.md
+├── README.md
+└── .github/
+    └── workflows/
+        ├── claude.yml            # Claude PR assistant
+        └── claude-code-review.yml # Claude code review
 ```
 
 ---
