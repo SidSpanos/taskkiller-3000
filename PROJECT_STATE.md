@@ -2,8 +2,7 @@
 
 ## Current Status
 
-TaskKiller 3000 — stable. Runtime Inspector (v3) replaces Node Inspector with a unified Node.js + Python panel.
-psutil required for Runtime Inspector.
+TaskKiller 3000 — stable. Runtime Inspector (v3) with operational dashboard UI. Telemetry sidebar on Port Scanner tab shows live process counts, port status, and runtime monitor state. Row tints, status dot, and activity log improvements shipped.
 
 ## Architecture
 
@@ -31,6 +30,9 @@ psutil required for Runtime Inspector.
 - Open port in default browser
 - Kill success auto-refreshes scanner
 - Dark theme with color-coded log output
+- **Telemetry sidebar** (210px fixed, right of scanner): live NODE.JS count, PYTHON count, PORTS ACTIVE (N/8), ORPHANED count (yellow when > 0), AUTO-REFRESH status, LAST SCAN time, RUNTIME MON state (STANDBY/ACTIVE)
+- Status bar: colored dot indicator (● green/yellow/red), psutil version shown directly
+- Activity log: `spacing1=2, spacing3=2` breathing room; dimmer timestamps (TIME tag); ACTIVITY LOG label above output; `─` separators in log headers
 
 ### Runtime Inspector (Tab 2)
 - Unified table: Node.js (green) and Python (blue) processes in one view
@@ -50,6 +52,9 @@ psutil required for Runtime Inspector.
 - Auto-refresh (3s, toggle checkbox); CPU% tracks across refreshes (0.0% on first tick)
 - Port map via psutil.net_connections() with netstat fallback
 - Tab lazy-loads on first visit; kills refresh Port Scanner automatically
+- **Per-runtime row background tints**: `ROW_NODE="#0f1f12"` (green wash), `ROW_PYTHON="#0d1520"` (blue wash), `ROW_ORPHAN="#1e1a00"` (amber wash), `ROW_ZOMBIE="#1e0a0a"` (red wash)
+- Button toolbar separator between Safe Stop and Force Kill group
+- "PROCESS DETAILS" header with `─` separator in detail panel
 
 ### DevProcessInspector Framework
 - `DevProcessInspector` base class: PROCESS_NAMES, SCRIPT_PATTERNS, RUNTIME_LABEL, DEFAULT_LABEL

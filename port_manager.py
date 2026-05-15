@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 TaskKiller 3000
 ====================
@@ -42,8 +43,10 @@ except ImportError:
 BG_DARK       = "#1e1e1e"
 BG_PANEL      = "#252526"
 BG_OUTPUT     = "#0f0f0f"
+BG_TELEM      = "#1c1c1d"   # telemetry sidebar — very slightly darker than BG_DARK
 FG_TEXT       = "#e6e6e6"
-FG_DIM        = "#a0a0a0"
+FG_DIM        = "#6e7a80"
+FG_MID        = "#9eacb4"
 ACCENT        = "#007acc"
 ACCENT_HOVER  = "#1a8fdc"
 BTN_KILL      = "#c0392b"
@@ -52,6 +55,12 @@ BTN_VERIFY    = "#27ae60"
 BTN_VERIFY_HV = "#2ecc71"
 BTN_QUICK     = "#3c3c3c"
 BTN_QUICK_HV  = "#505050"
+
+# Row tints used in the Runtime Inspector treeview
+ROW_NODE      = "#0f1f12"   # very subtle dark green tint
+ROW_PYTHON    = "#0d1520"   # very subtle dark blue tint
+ROW_ORPHAN    = "#1e1a00"   # dark amber tint
+ROW_ZOMBIE    = "#1e0a0a"   # dark red tint
 
 PROCESS_COLORS = {
     "node":     "#2ecc71",
@@ -194,11 +203,9 @@ class DevProcessInspector:
     DEFAULT_LABEL:   str = "Process"
 
     def __init__(self):
-        # Persistent Process objects so cpu_percent(interval=None) accumulates
         self._cpu_procs: dict[int, "psutil.Process"] = {}
 
     def should_include(self, info: ProcessInfo) -> bool:
-        """Return False to hide a process from the Runtime Inspector table."""
         return True
 
     def collect(self, port_map: dict[int, list[str]]) -> list[ProcessInfo]:
@@ -222,7 +229,7 @@ class DevProcessInspector:
                 if pid not in self._cpu_procs:
                     self._cpu_procs[pid] = proc
                     try:
-                        proc.cpu_percent(interval=None)  # seed; first call returns 0.0
+                        proc.cpu_percent(interval=None)
                     except Exception:
                         pass
                 info = self._gather(self._cpu_procs[pid], port_map, all_pids)
@@ -329,8 +336,6 @@ class PythonInspector(DevProcessInspector):
     SCRIPT_PATTERNS = PYTHON_SCRIPT_PATTERNS
 
     def should_include(self, info: ProcessInfo) -> bool:
-        # Surface only Python processes with listening ports or a recognized dev pattern.
-        # Avoids flooding the table with every incidental python.exe on the machine.
         return bool(info.ports) or info.script_type != self.DEFAULT_LABEL
 
     def _detect_venv(self, exe: str, cwd: str) -> str:
@@ -338,11 +343,9 @@ class PythonInspector(DevProcessInspector):
             return ""
         try:
             p = Path(exe)
-            # Walk up from the executable looking for pyvenv.cfg (marks venv root)
             for candidate in (p.parent, p.parent.parent, p.parent.parent.parent):
                 if (candidate / "pyvenv.cfg").exists():
                     return candidate.name
-            # Fallback: check path components for common venv directory names
             for part in p.parts:
                 low = part.lower()
                 if low in (".venv", "venv", "env", ".env"):
@@ -359,7 +362,6 @@ class PythonInspector(DevProcessInspector):
         try:
             p = Path(cwd)
             for candidate in (p, p.parent, p.parent.parent):
-                # pyproject.toml — [project] name = "..."
                 try:
                     ppt = candidate / "pyproject.toml"
                     if ppt.exists():
@@ -371,7 +373,6 @@ class PythonInspector(DevProcessInspector):
                             return m.group(1).strip()
                 except Exception:
                     pass
-                # setup.cfg — [metadata] name = ...
                 try:
                     scfg = candidate / "setup.cfg"
                     if scfg.exists():
@@ -383,7 +384,6 @@ class PythonInspector(DevProcessInspector):
                                 return name
                 except Exception:
                     pass
-                # package.json as fallback (monorepo setups)
                 try:
                     pkg = candidate / "package.json"
                     if pkg.exists():
@@ -399,7 +399,7 @@ class PythonInspector(DevProcessInspector):
 
 
 # ---------------------------------------------------------------------------
-# Runtime Inspector UI panel — Node.js + Python in one unified table
+# Runtime Inspector UI panel — Node.js + Python unified table
 # ---------------------------------------------------------------------------
 class RuntimeInspectorPanel:
 
@@ -420,18 +420,25 @@ class RuntimeInspectorPanel:
     # UI construction
     # ------------------------------------------------------------------
     def _build_ui(self):
+        # Toolbar
         toolbar = Frame(self.parent, bg=BG_PANEL, padx=10, pady=8)
         toolbar.pack(fill="x")
 
         Label(
             toolbar, text="Runtime Inspector",
             bg=BG_PANEL, fg=FG_TEXT, font=("Segoe UI", 11, "bold"),
-        ).pack(side="left", padx=(0, 16))
+        ).pack(side="left", padx=(0, 14))
 
-        self._btn(toolbar, "Refresh",       self.refresh,        ACCENT,     ACCENT_HOVER ).pack(side="left", padx=(0, 4))
-        self._btn(toolbar, "Safe Stop",     self._safe_stop,     BTN_VERIFY, BTN_VERIFY_HV).pack(side="left", padx=4)
-        self._btn(toolbar, "Force Kill",    self._force_kill,    BTN_KILL,   BTN_KILL_HVR ).pack(side="left", padx=4)
-        self._btn(toolbar, "Kill All Node", self._kill_all_node, BTN_KILL,   BTN_KILL_HVR ).pack(side="left", padx=4)
+        # Action group: safe operations
+        self._btn(toolbar, "Refresh",    self.refresh,     ACCENT,     ACCENT_HOVER ).pack(side="left", padx=(0, 4))
+        self._btn(toolbar, "Safe Stop",  self._safe_stop,  BTN_VERIFY, BTN_VERIFY_HV).pack(side="left", padx=(0, 2))
+
+        # Thin separator between safe and destructive actions
+        Frame(toolbar, bg="#3a3a3a", width=1).pack(side="left", padx=8, fill="y", pady=4)
+
+        # Destructive group
+        self._btn(toolbar, "Force Kill",    self._force_kill,    BTN_KILL, BTN_KILL_HVR).pack(side="left", padx=(0, 4))
+        self._btn(toolbar, "Kill All Node", self._kill_all_node, BTN_KILL, BTN_KILL_HVR).pack(side="left")
 
         Checkbutton(
             toolbar, text="Auto (3s)", variable=self._auto_var,
@@ -444,7 +451,7 @@ class RuntimeInspectorPanel:
         self._status_var = StringVar(value="")
         Label(
             toolbar, textvariable=self._status_var,
-            bg=BG_PANEL, fg=FG_DIM, font=("Segoe UI", 9),
+            bg=BG_PANEL, fg=FG_MID, font=("Consolas", 9),
         ).pack(side="right", padx=4)
 
         # Paned: treeview (top) + detail panel (bottom)
@@ -477,10 +484,11 @@ class RuntimeInspectorPanel:
             self.tree.column(cid, width=width, minwidth=50,
                              anchor=anchor, stretch=(cid == "cwd"))
 
-        self.tree.tag_configure("node_ok",  foreground="#2ecc71")
-        self.tree.tag_configure("py_ok",    foreground="#3498db")
-        self.tree.tag_configure("orphaned", foreground="#f1c40f")
-        self.tree.tag_configure("zombie",   foreground="#e74c3c")
+        # Per-runtime row tints for at-a-glance distinction
+        self.tree.tag_configure("node_ok",  foreground="#2ecc71", background=ROW_NODE)
+        self.tree.tag_configure("py_ok",    foreground="#3498db", background=ROW_PYTHON)
+        self.tree.tag_configure("orphaned", foreground="#f1c40f", background=ROW_ORPHAN)
+        self.tree.tag_configure("zombie",   foreground="#e74c3c", background=ROW_ZOMBIE)
 
         sb_v = ttk.Scrollbar(tree_frame, orient="vertical",   command=self.tree.yview)
         sb_h = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
@@ -495,9 +503,11 @@ class RuntimeInspectorPanel:
         paned.add(detail_frame, weight=1)
 
         Label(
-            detail_frame, text="Process Details",
-            bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 9, "bold"),
-        ).pack(anchor="w", padx=6, pady=(4, 2))
+            detail_frame, text="PROCESS DETAILS",
+            bg=BG_DARK, fg=FG_DIM, font=("Consolas", 8, "bold"),
+        ).pack(anchor="w", padx=10, pady=(6, 2))
+
+        Frame(detail_frame, bg="#2a2a2a", height=1).pack(fill="x", padx=8, pady=(0, 4))
 
         di = Frame(detail_frame, bg=BG_DARK)
         di.pack(fill="both", expand=True, padx=6, pady=(0, 6))
@@ -505,7 +515,7 @@ class RuntimeInspectorPanel:
         self.detail = Text(
             di, wrap="word", bg=BG_OUTPUT, fg=FG_TEXT,
             insertbackground=FG_TEXT, font=("Consolas", 10),
-            relief="flat", padx=10, pady=8, state=DISABLED,
+            relief="flat", padx=12, pady=10, state=DISABLED,
         )
         sb_d = Scrollbar(di, command=self.detail.yview)
         self.detail.configure(yscrollcommand=sb_d.set)
@@ -553,6 +563,7 @@ class RuntimeInspectorPanel:
             self.processes.extend(inspector.collect(self._port_map))
 
         self._populate_tree()
+        self.app._update_telemetry()  # push fresh data to sidebar
 
         node_count = sum(1 for p in self.processes if p.runtime == "Node.js")
         py_count   = sum(1 for p in self.processes if p.runtime == "Python")
@@ -604,7 +615,6 @@ class RuntimeInspectorPanel:
         sel_pid = int(sel[0]) if sel else None
         self.tree.delete(*self.tree.get_children())
 
-        # Sort: runtime first (Node before Python), then pid
         for p in sorted(self.processes, key=lambda x: (x.runtime, x.pid)):
             if p.is_zombie:
                 tag = "zombie"
@@ -664,19 +674,18 @@ class RuntimeInspectorPanel:
         self.detail.delete("1.0", END)
 
         def kv(k: str, v: str, vtag: str = "val"):
-            self.detail.insert(END, f"  {k:<22}", "key")
+            self.detail.insert(END, f"  {k:<24}", "key")
             self.detail.insert(END, f"{v}\n", vtag)
 
-        self.detail.insert(END, f"  PID {p.pid}  —  {p.name}  [{p.script_type}]\n\n", "header")
+        self.detail.insert(END, f"  {p.name}  ·  PID {p.pid}  ·  {p.script_type}\n\n", "header")
 
         runtime_tag = "pyblue" if p.runtime == "Python" else "ok"
         kv("Runtime:",        p.runtime, runtime_tag)
         status_tag = "error" if p.is_zombie else ("warn" if p.is_orphaned else "ok")
         kv("Status:",         p.status_display, status_tag)
-        kv("PID:",            str(p.pid))
-        kv("Parent PID:",     str(p.ppid))
+        kv("PID / Parent:",   f"{p.pid}  →  {p.ppid}")
         if p.children:
-            kv("Child PIDs:", ", ".join(str(c) for c in p.children))
+            kv("Children:", ", ".join(str(c) for c in p.children))
         kv("Listening Ports:", ", ".join(p.ports) if p.ports else "none")
         kv("CPU:",            f"{p.cpu_percent:.2f}%")
         kv("RAM:",            f"{p.ram_mb:.1f} MB")
@@ -854,7 +863,7 @@ class PortProcessManager:
         self.root = root
         self.root.title("TaskKiller 3000")
         self.root.geometry("1200x860")
-        self.root.minsize(800, 620)
+        self.root.minsize(820, 640)
         self.root.configure(bg=BG_DARK)
 
         self.current_pid: int | None = None
@@ -862,6 +871,15 @@ class PortProcessManager:
         self.auto_refresh_var = IntVar(value=0)
         self.status_var = StringVar(value="READY")
         self._auto_refresh_job = None
+
+        # Telemetry sidebar StringVars
+        self._tv_node    = StringVar(value="—")
+        self._tv_py      = StringVar(value="—")
+        self._tv_ports   = StringVar(value=f"— / {len(SCAN_PORTS)}")
+        self._tv_orphan  = StringVar(value="—")
+        self._tv_auto    = StringVar(value="off")
+        self._tv_scan    = StringVar(value="—")
+        self._tv_monitor = StringVar(value="STANDBY")
 
         self._setup_styles()
 
@@ -875,17 +893,32 @@ class PortProcessManager:
         self.runtime_tab = Frame(self.notebook, bg=BG_DARK)
         self.notebook.add(self.runtime_tab, text="  Runtime Inspector  ")
 
-        # Build Port Scanner UI into port_tab
+        # Status bar goes into port_tab first (reserves bottom space before content fill)
+        self._build_status_bar()
+
+        # Horizontal content split: left (scanner) + right (telemetry)
+        self.port_content = Frame(self.port_tab, bg=BG_DARK)
+        self.port_content.pack(fill="both", expand=True)
+
+        self.port_right = Frame(self.port_content, bg=BG_TELEM, width=210)
+        self.port_right.pack_propagate(False)
+        self.port_right.pack(side="right", fill="y")
+
+        self.port_left = Frame(self.port_content, bg=BG_DARK)
+        self.port_left.pack(side="left", fill="both", expand=True)
+
+        # Build Port Scanner UI into port_left
         self._build_top_section()
         self._build_scanner_panel()
         self._build_action_buttons()
         self._build_output_area()
-        self._build_status_bar()
 
-        # Build Runtime Inspector into runtime_tab
+        # Build telemetry sidebar into port_right
+        self._build_telemetry_panel()
+
+        # Build Runtime Inspector
         self.runtime_panel = RuntimeInspectorPanel(self.runtime_tab, self)
 
-        # Lazy-load Runtime Inspector on first visit
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_change)
 
         self.log("TaskKiller 3000 started.", level="INFO")
@@ -916,7 +949,7 @@ class PortProcessManager:
         )
         style.configure(
             "Dashboard.Treeview.Heading",
-            background=BG_DARK, foreground=FG_DIM,
+            background=BG_DARK, foreground=FG_MID,
             font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0,
         )
         style.map(
@@ -939,10 +972,88 @@ class PortProcessManager:
         style.configure("TPanedwindow", background=BG_DARK)
 
     # ------------------------------------------------------------------
-    # Port Scanner UI construction
+    # Telemetry sidebar
+    # ------------------------------------------------------------------
+    def _build_telemetry_panel(self):
+        p = self.port_right
+
+        # Header
+        Label(
+            p, text="TELEMETRY",
+            bg=BG_TELEM, fg=FG_DIM, font=("Consolas", 8, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(14, 0))
+        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(4, 10))
+
+        def metric(label: str, var: StringVar, val_color: str = "#2ecc71") -> Label:
+            Label(p, text=label, bg=BG_TELEM, fg=FG_DIM,
+                  font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
+            lbl = Label(p, textvariable=var, bg=BG_TELEM, fg=val_color,
+                        font=("Consolas", 14, "bold"), anchor="w")
+            lbl.pack(fill="x", padx=14, pady=(0, 10))
+            return lbl
+
+        metric("NODE.JS",         self._tv_node,   "#2ecc71")
+        metric("PYTHON",          self._tv_py,      "#3498db")
+        metric("PORTS ACTIVE",    self._tv_ports,   ACCENT)
+
+        self._orphan_label = metric("ORPHANED",  self._tv_orphan, "#2ecc71")
+
+        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(0, 10))
+
+        metric("AUTO-REFRESH",    self._tv_auto,    FG_MID)
+        metric("LAST SCAN",       self._tv_scan,    FG_MID)
+
+        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(0, 10))
+
+        Label(p, text="RUNTIME MON", bg=BG_TELEM, fg=FG_DIM,
+              font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
+        self._monitor_label = Label(
+            p, textvariable=self._tv_monitor,
+            bg=BG_TELEM, fg=FG_DIM,
+            font=("Consolas", 11, "bold"), anchor="w",
+        )
+        self._monitor_label.pack(fill="x", padx=14, pady=(0, 10))
+
+        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(0, 10))
+
+        # Engine info at bottom
+        engine_str = f"psutil {psutil.__version__}" if PSUTIL_AVAILABLE else "tasklist"
+        Label(p, text="ENGINE", bg=BG_TELEM, fg=FG_DIM,
+              font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
+        Label(p, text=engine_str, bg=BG_TELEM, fg=FG_MID,
+              font=("Consolas", 9), anchor="w").pack(fill="x", padx=14)
+
+    def _update_telemetry(self):
+        """Refresh telemetry sidebar values from runtime panel data."""
+        if not hasattr(self, "runtime_panel"):
+            return
+
+        procs = self.runtime_panel.processes
+        node_n   = sum(1 for p in procs if p.runtime == "Node.js")
+        py_n     = sum(1 for p in procs if p.runtime == "Python")
+        orphan_n = sum(1 for p in procs if p.is_orphaned)
+
+        self._tv_node.set(str(node_n) if node_n else "—")
+        self._tv_py.set(str(py_n) if py_n else "—")
+
+        orphan_str = str(orphan_n) if procs else "—"
+        self._tv_orphan.set(orphan_str)
+        orphan_color = "#f1c40f" if orphan_n > 0 else "#2ecc71"
+        self._orphan_label.config(fg=orphan_color)
+
+        if procs:
+            self._tv_monitor.set("ACTIVE")
+            self._monitor_label.config(fg="#2ecc71")
+        else:
+            self._tv_monitor.set("STANDBY")
+            self._monitor_label.config(fg=FG_DIM)
+
+    # ------------------------------------------------------------------
+    # Port Scanner UI construction (targets self.port_left)
     # ------------------------------------------------------------------
     def _build_top_section(self):
-        top = Frame(self.port_tab, bg=BG_PANEL, padx=12, pady=10)
+        top = Frame(self.port_left, bg=BG_PANEL, padx=12, pady=10)
         top.pack(fill="x", padx=10, pady=(10, 4))
 
         Label(top, text="Port:", bg=BG_PANEL, fg=FG_TEXT,
@@ -971,14 +1082,14 @@ class PortProcessManager:
                           bg=BTN_QUICK, hover=BTN_QUICK_HV).pack(side="right", padx=(0, 10))
 
     def _build_scanner_panel(self):
-        outer = Frame(self.port_tab, bg=BG_DARK, padx=10, pady=2)
+        outer = Frame(self.port_left, bg=BG_DARK, padx=10, pady=2)
         outer.pack(fill="x", padx=10)
 
         toolbar = Frame(outer, bg=BG_DARK)
         toolbar.pack(fill="x", pady=(0, 4))
 
-        Label(toolbar, text="Port Scanner", bg=BG_DARK, fg=FG_DIM,
-              font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 10))
+        Label(toolbar, text="PORT SCANNER", bg=BG_DARK, fg=FG_DIM,
+              font=("Consolas", 8, "bold")).pack(side="left", padx=(0, 10))
 
         self._make_button(toolbar, "Scan All", self.scan_all_ports,
                           bg=ACCENT, hover=ACCENT_HOVER, width=10).pack(side="left", padx=(0, 6))
@@ -987,9 +1098,9 @@ class PortProcessManager:
 
         self._scan_time_var = StringVar(value="")
         Label(toolbar, textvariable=self._scan_time_var,
-              bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 8)).pack(side="right")
-        Label(toolbar, text="double-click row to load port →",
-              bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 8)).pack(side="right", padx=(0, 12))
+              bg=BG_DARK, fg=FG_DIM, font=("Consolas", 8)).pack(side="right")
+        Label(toolbar, text="double-click row to load →",
+              bg=BG_DARK, fg=FG_DIM, font=("Consolas", 8)).pack(side="right", padx=(0, 12))
 
         tree_frame = Frame(outer, bg=BG_DARK)
         tree_frame.pack(fill="x")
@@ -1024,7 +1135,7 @@ class PortProcessManager:
         self.scan_tree.bind("<Return>",   self._on_scan_row_select)
 
     def _build_action_buttons(self):
-        actions = Frame(self.port_tab, bg=BG_DARK, padx=12, pady=8)
+        actions = Frame(self.port_left, bg=BG_DARK, padx=12, pady=8)
         actions.pack(fill="x", padx=10)
 
         self._make_button(actions, "1) Find PID",       self.find_pid,
@@ -1037,13 +1148,20 @@ class PortProcessManager:
                           bg=BTN_QUICK, hover=BTN_QUICK_HV, width=14).pack(side="right", padx=4)
 
     def _build_output_area(self):
-        wrapper = Frame(self.port_tab, bg=BG_DARK, padx=12, pady=6)
-        wrapper.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+        # Section label
+        log_header_row = Frame(self.port_left, bg=BG_DARK, padx=22, pady=(4, 0))
+        log_header_row.pack(fill="x")
+        Label(log_header_row, text="ACTIVITY LOG", bg=BG_DARK, fg=FG_DIM,
+              font=("Consolas", 8, "bold")).pack(side="left")
+
+        wrapper = Frame(self.port_left, bg=BG_DARK, padx=12, pady=(2, 6))
+        wrapper.pack(fill="both", expand=True, padx=10)
 
         self.output = Text(
             wrapper, wrap="word", bg=BG_OUTPUT, fg=FG_TEXT,
             insertbackground=FG_TEXT, font=("Consolas", 10),
             relief="flat", padx=10, pady=10, state=DISABLED,
+            spacing1=2, spacing3=2,   # adds breathing room between log lines
         )
         self.output.pack(side="left", fill="both", expand=True)
 
@@ -1051,11 +1169,11 @@ class PortProcessManager:
         sb.pack(side="right", fill="y")
         self.output.config(yscrollcommand=sb.set)
 
-        self.output.tag_configure("INFO",   foreground="#cfcfcf")
+        self.output.tag_configure("INFO",   foreground="#b0bec5")
         self.output.tag_configure("WARN",   foreground="#f1c40f")
         self.output.tag_configure("ERROR",  foreground="#e74c3c")
         self.output.tag_configure("OK",     foreground="#2ecc71")
-        self.output.tag_configure("TIME",   foreground="#7f8c8d")
+        self.output.tag_configure("TIME",   foreground="#4a5a62")  # dim timestamp
         self.output.tag_configure("HEADER", foreground=ACCENT,
                                   font=("Consolas", 10, "bold"))
         for name, color in PROCESS_COLORS.items():
@@ -1063,8 +1181,15 @@ class PortProcessManager:
                                       font=("Consolas", 10, "bold"))
 
     def _build_status_bar(self):
-        bar = Frame(self.port_tab, bg=BG_PANEL, padx=12, pady=6)
+        bar = Frame(self.port_tab, bg=BG_PANEL, padx=12, pady=5)
         bar.pack(fill="x", side="bottom")
+
+        # Colored status dot indicator
+        self.status_dot = Label(
+            bar, text="●", bg=BG_PANEL, fg="#2ecc71",
+            font=("Segoe UI", 9),
+        )
+        self.status_dot.pack(side="left", padx=(0, 4))
 
         Label(bar, text="Status:", bg=BG_PANEL, fg=FG_DIM,
               font=("Segoe UI", 9)).pack(side="left")
@@ -1073,11 +1198,11 @@ class PortProcessManager:
             bar, textvariable=self.status_var,
             bg=BG_PANEL, fg="#2ecc71", font=("Segoe UI", 10, "bold"),
         )
-        self.status_label.pack(side="left", padx=8)
+        self.status_label.pack(side="left", padx=(6, 0))
 
-        engine = "psutil" if PSUTIL_AVAILABLE else "tasklist (fallback)"
-        Label(bar, text=f"Inspection engine: {engine}",
-              bg=BG_PANEL, fg=FG_DIM, font=("Segoe UI", 9)).pack(side="right")
+        engine = f"psutil {psutil.__version__}" if PSUTIL_AVAILABLE else "tasklist"
+        Label(bar, text=engine, bg=BG_PANEL, fg=FG_DIM,
+              font=("Consolas", 8)).pack(side="right")
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1100,12 +1225,13 @@ class PortProcessManager:
     def _set_status(self, text: str, color: str = "#2ecc71"):
         self.status_var.set(text)
         self.status_label.config(fg=color)
+        self.status_dot.config(fg=color)
 
     def log(self, message: str, level: str = "INFO"):
         ts = datetime.now().strftime("%H:%M:%S")
         self.output.config(state=NORMAL)
-        self.output.insert(END, f"[{ts}] ", "TIME")
-        self.output.insert(END, f"{level:<5} ",
+        self.output.insert(END, f"[{ts}]  ", "TIME")
+        self.output.insert(END, f"{level:<5}  ",
                            level if level in ("INFO", "WARN", "ERROR", "OK") else "INFO")
         self.output.insert(END, f"{message}\n")
         self.output.see(END)
@@ -1113,9 +1239,8 @@ class PortProcessManager:
 
     def log_header(self, title: str):
         self.output.config(state=NORMAL)
-        self.output.insert(END, f"\n{'=' * 60}\n", "HEADER")
-        self.output.insert(END, f"  {title}\n", "HEADER")
-        self.output.insert(END, f"{'=' * 60}\n", "HEADER")
+        self.output.insert(END, f"\n  {title}\n", "HEADER")
+        self.output.insert(END, f"  {'─' * 56}\n", "HEADER")
         self.output.see(END)
         self.output.config(state=DISABLED)
 
@@ -1236,6 +1361,11 @@ class PortProcessManager:
             "#2ecc71" if occupied == 0 else "#f1c40f",
         )
 
+        # Update telemetry sidebar
+        self._tv_ports.set(f"{occupied} / {len(SCAN_PORTS)}")
+        self._tv_scan.set(ts)
+        self._update_telemetry()
+
     def _on_scan_row_select(self, _event=None):
         sel = self.scan_tree.selection()
         if not sel:
@@ -1257,7 +1387,7 @@ class PortProcessManager:
         if port is None:
             return
         self.current_port = port
-        self.log_header(f"STEP 1: Finding PID for port {port}")
+        self.log_header(f"STEP 1  ·  Find PID for port {port}")
         try:
             result = subprocess.run(
                 ["netstat", "-ano"], capture_output=True, text=True, shell=False,
@@ -1280,7 +1410,7 @@ class PortProcessManager:
             self._set_status("READY", "#f1c40f")
             return
 
-        self.log("Raw netstat output (filtered):", level="INFO")
+        self.log("netstat output (filtered):", level="INFO")
         self.output.config(state=NORMAL)
         for ln in matching:
             self.output.insert(END, f"    {ln}\n")
@@ -1299,7 +1429,7 @@ class PortProcessManager:
             return
 
         self.current_pid = listening_pid
-        self.log(f"Detected LISTENING PID: {listening_pid}", level="OK")
+        self.log(f"LISTENING PID: {listening_pid}", level="OK")
         self._set_status("PROCESS FOUND", "#2ecc71")
 
     def _parse_listening_pid(self, lines: list[str], port: str) -> "int | None":
@@ -1321,7 +1451,7 @@ class PortProcessManager:
         if self.current_pid is None:
             self.log("No PID stored. Click 'Find PID' first.", level="WARN")
             return
-        self.log_header(f"STEP 2: Verifying PID {self.current_pid}")
+        self.log_header(f"STEP 2  ·  Verify PID {self.current_pid}")
         if PSUTIL_AVAILABLE:
             self._verify_with_psutil(self.current_pid)
         else:
@@ -1432,7 +1562,7 @@ class PortProcessManager:
             self.log("Kill cancelled by user.", level="INFO")
             return
 
-        self.log_header(f"STEP 3: Killing PID {self.current_pid} ({name})")
+        self.log_header(f"STEP 3  ·  Kill PID {self.current_pid} ({name})")
         try:
             result = subprocess.run(
                 ["taskkill", "/PID", str(self.current_pid), "/F"],
@@ -1450,7 +1580,7 @@ class PortProcessManager:
             if stdout:
                 self.log(stdout, level="OK")
             self.log(
-                f"PID {self.current_pid} terminated. Port {self.current_port} should now be free.",
+                f"PID {self.current_pid} terminated. Port {self.current_port} is now free.",
                 level="OK",
             )
             self._set_status("PROCESS KILLED", "#2ecc71")
@@ -1472,7 +1602,7 @@ class PortProcessManager:
             self.log("Kill-all-node cancelled.", level="INFO")
             return
 
-        self.log_header("Killing ALL node.exe processes")
+        self.log_header("Kill ALL node.exe processes")
         try:
             result = subprocess.run(
                 ["taskkill", "/IM", "node.exe", "/F"],
@@ -1515,9 +1645,11 @@ class PortProcessManager:
     def _toggle_auto_refresh(self):
         if self.auto_refresh_var.get():
             self.log("Auto-refresh enabled (every 5 seconds).", level="INFO")
+            self._tv_auto.set("ON (5s)")
             self._auto_refresh_tick()
         else:
             self.log("Auto-refresh disabled.", level="INFO")
+            self._tv_auto.set("off")
             if self._auto_refresh_job is not None:
                 try:
                     self.root.after_cancel(self._auto_refresh_job)
