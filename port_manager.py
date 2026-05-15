@@ -18,6 +18,7 @@ Run:
 
 import dataclasses
 import json
+import math
 import os
 import random
 import re
@@ -27,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import (
     Tk, Frame, Label, Entry, Button, Text, Scrollbar, StringVar,
-    IntVar, Checkbutton, END, DISABLED, NORMAL, messagebox,
+    IntVar, Checkbutton, Canvas, END, DISABLED, NORMAL, messagebox,
 )
 from tkinter import ttk
 
@@ -919,8 +920,6 @@ class PortProcessManager:
         self._build_action_buttons()
         self._build_output_area()
 
-        # Load branding/atmospheric assets then build ops panel
-        self._load_panel_assets()
         self._build_telemetry_panel()
 
         # Runtime Inspector
@@ -979,129 +978,166 @@ class PortProcessManager:
         style.configure("TPanedwindow", background=BG_DARK)
 
     # ------------------------------------------------------------------
-    # Ops panel assets + effects
+    # Ops panel canvas animations
     # ------------------------------------------------------------------
-    def _load_panel_assets(self) -> None:
-        """Load header/radar images. Pillow for scaling+variants; PhotoImage fallback."""
-        self._head_imgs: list = []   # [normal] or [normal, dim] for flicker
-        self._radar_imgs: list = []  # 1–4 very-dim frames for atmospheric pulse
-        self._radar_idx: int = 0
+    def _build_header_canvas(self) -> None:
+        """Canvas-rendered title + subtitle with a slow horizontal scan line."""
+        W, H = 210, 68
+        c = Canvas(self.ops_panel, width=W, height=H,
+                   bg=BG_TELEM, highlightthickness=0, bd=0)
+        c.pack(fill="x")
 
-        base       = Path(__file__).parent / "assets" / "images"
-        head_path  = base / "head.png"
-        radar_path = base / "radar.png"
+        c.create_text(12, 22, text="TASKKILLER 3000",
+                      fill="#2ecc71", font=("Consolas", 13, "bold"), anchor="w")
+        c.create_text(12, 42, text="RUNTIME OPS MONITOR",
+                      fill="#2a4038", font=("Consolas", 7, "bold"), anchor="w")
+        c.create_line(0, H - 1, W, H - 1, fill="#1a2820", width=1)
 
-        try:
-            from PIL import Image, ImageTk, ImageEnhance
+        self._scan_y  = 0
+        self._scan_id = c.create_line(0, 0, W, 0, fill="#152e22", width=1)
+        self._hdr_canvas = c
+        self._animate_scan()
 
-            if head_path.exists():
-                img = Image.open(head_path).convert("RGBA")
-                h   = int(img.height * 210 / img.width)
-                img = img.resize((210, h), Image.LANCZOS)
-                enh = ImageEnhance.Brightness(img)
-                self._head_imgs = [
-                    ImageTk.PhotoImage(img),
-                    ImageTk.PhotoImage(enh.enhance(0.70)),  # dim for flicker
-                ]
+    def _animate_scan(self) -> None:
+        self._scan_y = (self._scan_y + 1) % 68
+        self._hdr_canvas.coords(self._scan_id, 0, self._scan_y, 210, self._scan_y)
+        self._hdr_canvas.after(45, self._animate_scan)  # ~22 fps, single coord update
 
-            if radar_path.exists():
-                size = 170  # fits 210px panel with ~20px margins each side
-                img  = Image.open(radar_path).convert("RGBA")
-                img  = img.resize((size, size), Image.LANCZOS)
-                enh  = ImageEnhance.Brightness(img)
-                # Very dim — atmospheric texture, not a featured image
-                self._radar_imgs = [
-                    ImageTk.PhotoImage(enh.enhance(0.18)),
-                    ImageTk.PhotoImage(enh.enhance(0.22)),
-                    ImageTk.PhotoImage(enh.enhance(0.26)),
-                    ImageTk.PhotoImage(enh.enhance(0.22)),
-                ]
-            return
-        except ImportError:
-            pass
+    def _build_radar_canvas(self) -> None:
+        """Procedural radar: rotating sweep, afterglow trail, fading blips."""
+        W, H   = 210, 168
+        cx, cy = W // 2, H // 2
+        r      = H // 2 - 8
 
-        # Fallback: native PhotoImage (PNG via Tk 8.6+), no brightness variants
-        import tkinter as _tk
-        try:
-            if head_path.exists():
-                raw    = _tk.PhotoImage(file=str(head_path))
-                factor = max(1, -(-raw.width() // 210))  # ceiling div
-                self._head_imgs = [raw.subsample(factor, factor) if factor > 1 else raw]
-        except Exception:
-            pass
-        try:
-            if radar_path.exists():
-                raw    = _tk.PhotoImage(file=str(radar_path))
-                factor = max(1, -(-raw.width() // 170))
-                self._radar_imgs = [raw.subsample(factor, factor) if factor > 1 else raw]
-        except Exception:
-            pass
+        c = Canvas(self.ops_panel, width=W, height=H,
+                   bg=BG_TELEM, highlightthickness=0, bd=0)
+        c.pack()
 
-    def _pulse_radar(self) -> None:
-        """Cycle radar brightness frames — slow atmospheric pulse, ~2.4s per step."""
-        if not self._radar_imgs or not hasattr(self, "_radar_lbl"):
-            return
-        self._radar_idx = (self._radar_idx + 1) % len(self._radar_imgs)
-        self._radar_lbl.config(image=self._radar_imgs[self._radar_idx])
-        self.root.after(2400, self._pulse_radar)
+        # Static rings (drawn once)
+        for frac in (0.28, 0.55, 0.82, 1.0):
+            rr = int(r * frac)
+            c.create_oval(cx - rr, cy - rr, cx + rr, cy + rr,
+                          outline="#0c1c14", width=1)
 
-    def _flicker_header(self) -> None:
-        """Occasional 80ms brightness dip on header — subtle CRT flicker."""
-        if len(self._head_imgs) < 2 or not hasattr(self, "_head_lbl"):
-            return
-        self._head_lbl.config(image=self._head_imgs[1])
-        self.root.after(80, self._restore_header)
-        self.root.after(random.randint(6000, 14000), self._flicker_header)
+        # Crosshairs
+        c.create_line(cx - r, cy, cx + r, cy, fill="#09120e", width=1)
+        c.create_line(cx, cy - r, cx, cy + r, fill="#09120e", width=1)
 
-    def _restore_header(self) -> None:
-        if self._head_imgs and hasattr(self, "_head_lbl"):
-            self._head_lbl.config(image=self._head_imgs[0])
+        # Tick marks every 30°
+        for deg in range(0, 360, 30):
+            rad   = math.radians(deg)
+            inner = r - 4
+            c.create_line(cx + inner * math.cos(rad), cy - inner * math.sin(rad),
+                          cx + r     * math.cos(rad), cy - r     * math.sin(rad),
+                          fill="#0d1e16", width=1)
+
+        # Animation state on the canvas object itself
+        c._angle = 0.0
+        c._blips = []          # [angle_rad, dist_frac, brightness]
+        c._cx, c._cy, c._r = cx, cy, r
+        self._radar_canvas = c
+        self._animate_radar()
+
+    def _animate_radar(self) -> None:
+        c = self._radar_canvas
+        c.delete("sweep")
+        c.delete("blip")
+
+        cx, cy, r = c._cx, c._cy, c._r
+
+        # Advance sweep — 2°/frame × ~12 fps ≈ one revolution per 15s
+        c._angle = (c._angle + 2.0) % 360.0
+        rad      = math.radians(c._angle)
+
+        # Afterglow trail (22 steps, brightness falls off linearly)
+        steps = 22
+        for i in range(steps, 0, -1):
+            t   = math.radians(c._angle - i * 1.4)
+            g   = int(160 * (steps - i) / steps * 0.30)
+            col = f"#{0:02x}{g:02x}{0:02x}"
+            c.create_line(cx, cy,
+                          cx + r * math.cos(t), cy - r * math.sin(t),
+                          fill=col, width=1, tags="sweep")
+
+        # Main sweep line
+        c.create_line(cx, cy,
+                      cx + r * math.cos(rad), cy - r * math.sin(rad),
+                      fill="#26a85c", width=1, tags="sweep")
+
+        # Seed a blip at the sweep tip (low probability)
+        if random.random() < 0.04:
+            c._blips.append([rad, random.uniform(0.22, 0.88), 1.0])
+
+        # Draw and decay blips
+        alive = []
+        for blip in c._blips:
+            blip_rad, dist, brightness = blip
+            if brightness > 0.04:
+                bx  = cx + r * dist * math.cos(blip_rad)
+                by  = cy - r * dist * math.sin(blip_rad)
+                g   = int(brightness * 180)
+                col = f"#{0:02x}{g:02x}{0:02x}"
+                c.create_oval(bx - 2, by - 2, bx + 2, by + 2,
+                              fill=col, outline="", tags="blip")
+                blip[2] *= 0.93
+                alive.append(blip)
+        c._blips = alive
+
+        c.after(82, self._animate_radar)  # ~12 fps
 
     # ------------------------------------------------------------------
     # Telemetry sidebar
     # ------------------------------------------------------------------
-    def _build_telemetry_panel(self):
+    def _build_telemetry_panel(self) -> None:
         p = self.ops_panel
 
-        # ── Branding banner ─────────────────────────────────────────────
-        if self._head_imgs:
-            self._head_lbl = Label(p, image=self._head_imgs[0], bg=BG_TELEM, bd=0)
-            self._head_lbl.pack(fill="x")
-            if len(self._head_imgs) >= 2:
-                self.root.after(random.randint(6000, 14000), self._flicker_header)
-        else:
-            Label(p, text="TASKKILLER 3000", bg=BG_TELEM, fg="#2d3840",
-                  font=("Consolas", 11, "bold"), anchor="w").pack(fill="x", padx=12, pady=(12, 0))
-            Label(p, text="RUNTIME OPERATIONS MONITOR", bg=BG_TELEM, fg=FG_DIM,
-                  font=("Consolas", 6, "bold"), anchor="w").pack(fill="x", padx=12, pady=(0, 2))
+        # ── Branding header (Canvas, scan line animation) ────────────────
+        self._build_header_canvas()
 
-        # Barely-visible section marker — not a hard separator
-        Label(p, text="OPS CONSOLE", bg=BG_TELEM, fg="#2e3840",
+        Label(p, text="OPS CONSOLE", bg=BG_TELEM, fg="#263640",
               font=("Consolas", 6, "bold"), anchor="w").pack(fill="x", padx=14, pady=(5, 0))
-        Frame(p, bg="#252830", height=1).pack(fill="x", pady=(3, 10))
+        Frame(p, bg="#222830", height=1).pack(fill="x", pady=(3, 10))
 
         # ── Telemetry metrics ────────────────────────────────────────────
-        def metric(label: str, var: StringVar, val_color: str = "#2ecc71") -> Label:
+        def metric(label: str, var: StringVar, val_color: str,
+                   dot_color: str | None = None) -> Label:
             row = Frame(p, bg=BG_TELEM)
             row.pack(fill="x", padx=14, pady=(0, 7))
-            Label(row, text=label, bg=BG_TELEM, fg=FG_DIM,
-                  font=("Consolas", 7, "bold"), anchor="w").pack(fill="x")
+
+            hdr = Frame(row, bg=BG_TELEM)
+            hdr.pack(fill="x")
+
+            if dot_color:
+                dot = Label(hdr, text="●", bg=BG_TELEM, fg=dot_color,
+                            font=("Segoe UI", 6))
+                dot.pack(side="left", padx=(0, 4))
+                # Each dot blinks independently at a random phase/interval
+                def _blink(vis=[True], lbl=dot, col=dot_color):
+                    lbl.config(fg=col if vis[0] else BG_TELEM)
+                    vis[0] = not vis[0]
+                    lbl.after(random.randint(1600, 2800), lambda: _blink(vis, lbl, col))
+                dot.after(random.randint(200, 1200), lambda: _blink())
+
+            Label(hdr, text=label, bg=BG_TELEM, fg=FG_DIM,
+                  font=("Consolas", 7, "bold"), anchor="w").pack(side="left")
+
             lbl = Label(row, textvariable=var, bg=BG_TELEM, fg=val_color,
                         font=("Consolas", 13, "bold"), anchor="w")
             lbl.pack(fill="x")
             return lbl
 
-        metric("NODE.JS",      self._tv_node,   "#2ecc71")
-        metric("PYTHON",       self._tv_py,      "#3498db")
+        metric("NODE.JS",      self._tv_node,   "#2ecc71", dot_color="#2ecc71")
+        metric("PYTHON",       self._tv_py,      "#3498db", dot_color="#3498db")
         metric("PORTS ACTIVE", self._tv_ports,   ACCENT)
-        self._orphan_label = metric("ORPHANED",  self._tv_orphan, "#2ecc71")
+        self._orphan_label = metric("ORPHANED",  self._tv_orphan, "#2ecc71",
+                                    dot_color="#f1c40f")
 
-        Frame(p, bg="#252830", height=1).pack(fill="x", padx=12, pady=(2, 8))
+        Frame(p, bg="#222830", height=1).pack(fill="x", padx=12, pady=(2, 8))
 
         metric("AUTO-REFRESH", self._tv_auto, FG_MID)
         metric("LAST SCAN",    self._tv_scan, FG_MID)
 
-        Frame(p, bg="#252830", height=1).pack(fill="x", padx=12, pady=(2, 8))
+        Frame(p, bg="#222830", height=1).pack(fill="x", padx=12, pady=(2, 8))
 
         Label(p, text="RUNTIME MON", bg=BG_TELEM, fg=FG_DIM,
               font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
@@ -1112,19 +1148,12 @@ class PortProcessManager:
         )
         self._monitor_label.pack(fill="x", padx=14, pady=(0, 6))
 
-        # ── Atmospheric radar — very dim, bottom of panel ────────────────
-        # Acts as visual texture/base, not a featured image.
-        # No separators above — flows naturally from content above.
-        Frame(p, bg=BG_TELEM).pack(fill="both", expand=True)  # spacer pushes to bottom
+        # ── Procedural radar — bottom of panel ──────────────────────────
+        Frame(p, bg=BG_TELEM).pack(fill="both", expand=True)
+        self._build_radar_canvas()
 
-        if self._radar_imgs:
-            self._radar_lbl = Label(p, image=self._radar_imgs[0], bg=BG_TELEM, bd=0)
-            self._radar_lbl.pack(pady=(4, 0))
-            if len(self._radar_imgs) > 1:
-                self.root.after(2400, self._pulse_radar)
-
-        # ── Engine ───────────────────────────────────────────────────────
-        Frame(p, bg="#252830", height=1).pack(fill="x")
+        # ── Engine footer ────────────────────────────────────────────────
+        Frame(p, bg="#222830", height=1).pack(fill="x")
         engine_str = f"psutil {psutil.__version__}" if PSUTIL_AVAILABLE else "tasklist"
         Label(p, text="ENGINE", bg=BG_TELEM, fg=FG_DIM,
               font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(5, 1))
