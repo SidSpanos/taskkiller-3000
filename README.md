@@ -1,6 +1,6 @@
 # TaskKiller 3000
 
-A Windows desktop utility for developer process management. Identify, inspect, and kill processes holding localhost ports — with deep visibility into Node.js environments before you terminate anything.
+A Windows desktop utility for developer process management. Identify, inspect, and kill processes holding localhost ports — with deep visibility into Node.js and Python environments before you terminate anything.
 
 Built with Python and Tkinter — no web stack, no Electron, no external UI frameworks.
 
@@ -16,9 +16,9 @@ Port scanner on startup — 8080 (`wslrelay.exe`) and 11434 (`ollama.exe`) detec
 
 ### Runtime Inspector
 
-![Runtime Inspector — process intelligence panel](screenshots/node-inspector.png)
+![Runtime Inspector — process intelligence panel](screenshots/runtime-inspector.png)
 
-Runtime Inspector tab showing active Node.js and Python dev processes side-by-side. Node.js rows in green, Python rows in blue. Columns include project name, script type (Vite, Next.js, Uvicorn, Flask, MCP Server, etc.), listening ports, CPU/RAM, and virtual environment. Orphaned processes highlighted in yellow.
+Runtime Inspector tab showing active Node.js and Python dev processes side-by-side. Node.js rows in green, Python rows in blue. Columns include runtime type, project name, script type (Vite, Next.js, Uvicorn, Flask, MCP Server, etc.), listening ports, CPU/RAM usage, and virtual environment. Orphaned processes are highlighted in yellow.
 
 ---
 
@@ -29,7 +29,7 @@ Runtime Inspector tab showing active Node.js and Python dev processes side-by-si
 | Python | 3.10 or newer |
 | OS | Windows 10 / 11 |
 | tkinter | Bundled with Python (no install needed) |
-| psutil | Optional for Port Scanner — **required for Node Inspector** |
+| psutil | Optional for Port Scanner — **required for Runtime Inspector** |
 
 > **Why Python 3.10?**  
 > The app uses `int | None` union type syntax introduced in Python 3.10. It will not start on older versions.
@@ -55,7 +55,7 @@ Or download and extract the ZIP from GitHub.
 
 ### 2. Install psutil (recommended)
 
-Without `psutil`, Port Scanner falls back to `tasklist` (less process detail). Node Inspector requires psutil — it will show a notice if missing.
+Without `psutil`, Port Scanner falls back to `tasklist` (less process detail). Runtime Inspector requires psutil — it will show a notice if missing.
 
 ```
 pip install psutil
@@ -347,7 +347,7 @@ Install it:
 pip install psutil
 ```
 
-The Port Scanner works without it using `tasklist` as fallback, but you'll get less process detail. Node Inspector is unavailable without psutil.
+The Port Scanner works without it using `tasklist` as fallback, but you'll get less process detail. Runtime Inspector is unavailable without psutil.
 
 ### App won't start — SyntaxError or TypeError on launch
 
@@ -368,7 +368,8 @@ taskkiller-3000/
 ├── PROJECT_STATE.md          # Project status and roadmap
 ├── screenshots/
 │   ├── main.png              # Port Scanner tab
-│   └── node-inspector.png    # Runtime Inspector tab
+│   ├── node-inspector.png    # earlier screenshot (kept for git history)
+│   └── runtime-inspector.png # Runtime Inspector tab (Node.js + Python)
 └── .github/
     └── workflows/
         ├── claude.yml                # Claude PR assistant
