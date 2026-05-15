@@ -1,3 +1,7 @@
 # Optional but recommended — enables richer process inspection
 # (exe path, command line, status) compared to the tasklist fallback.
 psutil>=5.9.0
+
+# Optional — enables image scaling, radar pulse, and header flicker in the ops panel.
+# Without Pillow, images display statically via native tkinter PhotoImage.
+Pillow>=10.0.0

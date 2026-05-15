@@ -24,12 +24,13 @@ Runtime Inspector tab showing active Node.js and Python dev processes side-by-si
 
 ## Requirements
 
-| Requirement | Version |
-|---|---|
-| Python | 3.10 or newer |
-| OS | Windows 10 / 11 |
-| tkinter | Bundled with Python (no install needed) |
-| psutil | Optional for Port Scanner — **required for Runtime Inspector** |
+| Requirement | Version | Notes |
+|---|---|---|
+| Python | 3.10 or newer | Required — uses `int \| None` union type syntax |
+| OS | Windows 10 / 11 | Required |
+| tkinter | Bundled with Python | No install needed |
+| psutil | Optional / Recommended | Optional for Port Scanner — **required for Runtime Inspector** |
+| Pillow | Optional | Enables image scaling, radar pulse, and header flicker effects |
 
 > **Why Python 3.10?**  
 > The app uses `int | None` union type syntax introduced in Python 3.10. It will not start on older versions.
@@ -53,12 +54,14 @@ cd taskkiller-3000
 
 Or download and extract the ZIP from GitHub.
 
-### 2. Install psutil (recommended)
+### 2. Install dependencies (recommended)
 
 Without `psutil`, Port Scanner falls back to `tasklist` (less process detail). Runtime Inspector requires psutil — it will show a notice if missing.
 
+Without `Pillow`, the ops panel shows images statically (no radar pulse or header flicker). All telemetry data still works.
+
 ```
-pip install psutil
+pip install psutil Pillow
 ```
 
 Or install from the requirements file:
@@ -93,7 +96,35 @@ Double-clicking `run_port_manager.bat` also works from Explorer.
 
 ## Features
 
-The application has two tabs: **Port Scanner** and **Runtime Inspector**.
+The application has a **persistent left operations panel** and two tabs: **Port Scanner** and **Runtime Inspector**.
+
+---
+
+### Persistent Operations Panel
+
+A fixed 185px left panel visible across all tabs. Acts as the application identity and global runtime monitoring dashboard.
+
+#### Branding assets
+- `assets/images/head.png` — "TASKKILLER 3000 / RUNTIME OPERATIONS MONITOR" banner, scaled to panel width
+- `assets/images/radar.png` — Green radar sweep, 155×155px, displayed below the banner
+
+#### Atmospheric effects (Pillow required)
+- **Radar pulse** — 4-frame brightness cycle at 1800ms/step (barely perceptible, low CPU)
+- **Header flicker** — 80ms dim event at 6–14s random intervals — CRT screen aesthetic
+
+Without Pillow, both images display statically with no effects.
+
+#### Live telemetry
+| Metric | Description |
+|---|---|
+| NODE.JS | Count of active Node.js processes |
+| PYTHON | Count of active Python dev processes |
+| PORTS ACTIVE | Occupied ports / total monitored (e.g. 2 / 8) |
+| ORPHANED | Orphaned process count (turns yellow when > 0) |
+| AUTO-REFRESH | on / off state of Port Scanner auto-refresh |
+| LAST SCAN | Timestamp of last port scan |
+| RUNTIME MON | STANDBY or ACTIVE (green when Runtime Inspector has data) |
+| ENGINE | psutil version or "tasklist" (fallback mode) |
 
 ---
 
@@ -361,11 +392,15 @@ You're on Python 3.9 or older. Upgrade to Python 3.10+.
 taskkiller-3000/
 ├── port_manager.py           # Main application (single file)
 ├── run_port_manager.bat      # Windows launcher
-├── requirements.txt          # psutil (optional)
+├── requirements.txt          # psutil + Pillow (both optional)
 ├── .gitignore
 ├── README.md
 ├── CLAUDE.md                 # AI assistant instructions
 ├── PROJECT_STATE.md          # Project status and roadmap
+├── assets/
+│   └── images/
+│       ├── head.png          # Branding banner (TASKKILLER 3000)
+│       └── radar.png         # Atmospheric radar sweep
 ├── screenshots/
 │   ├── main.png              # Port Scanner tab
 │   ├── node-inspector.png    # earlier screenshot (kept for git history)
