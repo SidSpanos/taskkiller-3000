@@ -1149,13 +1149,13 @@ class PortProcessManager:
 
     def _build_output_area(self):
         # Section label
-        log_header_row = Frame(self.port_left, bg=BG_DARK, padx=22, pady=(4, 0))
-        log_header_row.pack(fill="x")
+        log_header_row = Frame(self.port_left, bg=BG_DARK)
+        log_header_row.pack(fill="x", padx=22, pady=(4, 0))
         Label(log_header_row, text="ACTIVITY LOG", bg=BG_DARK, fg=FG_DIM,
               font=("Consolas", 8, "bold")).pack(side="left")
 
-        wrapper = Frame(self.port_left, bg=BG_DARK, padx=12, pady=(2, 6))
-        wrapper.pack(fill="both", expand=True, padx=10)
+        wrapper = Frame(self.port_left, bg=BG_DARK)
+        wrapper.pack(fill="both", expand=True, padx=22, pady=(2, 6))
 
         self.output = Text(
             wrapper, wrap="word", bg=BG_OUTPUT, fg=FG_TEXT,
