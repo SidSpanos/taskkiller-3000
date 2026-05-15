@@ -8,17 +8,17 @@ Built with Python and Tkinter — no web stack, no Electron, no external UI fram
 
 ## Screenshots
 
-### Port Scanner
+### Port Scanner with Persistent Operations Panel
 
-![Port Scanner — main window](screenshots/main.png)
+![Port Scanner — operational dashboard](screenshots/ops-panel-port-scanner.png)
 
-Port scanner on startup — 8080 (`wslrelay.exe`) and 11434 (`ollama.exe`) detected as OCCUPIED. Double-click any red row to load it into the Find → Verify → Kill workflow below.
+Port Scanner tab with the persistent left operations panel. Live telemetry shows NODE.JS count, PYTHON count, PORTS ACTIVE (1/8), ORPHANED count, AUTO-REFRESH state, LAST SCAN timestamp, and RUNTIME MON status. Port 11434 (`ollama.exe`) detected as OCCUPIED. The procedural radar sweep and terminal-style branding are visible at the left. ACTIVITY LOG below the scanner table shows timestamped INFO and WARN events.
 
-### Runtime Inspector
+### Runtime Inspector with Persistent Operations Panel
 
-![Runtime Inspector — process intelligence panel](screenshots/runtime-inspector.png)
+![Runtime Inspector — process intelligence panel](screenshots/ops-panel-runtime-inspector.png)
 
-Runtime Inspector tab showing active Node.js and Python dev processes side-by-side. Node.js rows in green, Python rows in blue. Columns include runtime type, project name, script type (Vite, Next.js, Uvicorn, Flask, MCP Server, etc.), listening ports, CPU/RAM usage, and virtual environment. Orphaned processes are highlighted in yellow.
+Runtime Inspector tab — the left operations panel remains visible and live across all tab switches. Two Node.js processes shown: one RUNNING (green row), one ORPHANED (amber row). The persistent status bar at the bottom shows READY with a colored indicator dot. Telemetry in the sidebar continues updating: ORPHANED count = 1, RUNTIME MON = ACTIVE.
 
 ---
 
@@ -30,7 +30,6 @@ Runtime Inspector tab showing active Node.js and Python dev processes side-by-si
 | OS | Windows 10 / 11 | Required |
 | tkinter | Bundled with Python | No install needed |
 | psutil | Optional / Recommended | Optional for Port Scanner — **required for Runtime Inspector** |
-| Pillow | Optional | Enables image scaling, radar pulse, and header flicker effects |
 
 > **Why Python 3.10?**  
 > The app uses `int | None` union type syntax introduced in Python 3.10. It will not start on older versions.
@@ -54,14 +53,12 @@ cd taskkiller-3000
 
 Or download and extract the ZIP from GitHub.
 
-### 2. Install dependencies (recommended)
+### 2. Install psutil (recommended)
 
 Without `psutil`, Port Scanner falls back to `tasklist` (less process detail). Runtime Inspector requires psutil — it will show a notice if missing.
 
-Without `Pillow`, the ops panel shows images statically (no radar pulse or header flicker). All telemetry data still works.
-
 ```
-pip install psutil Pillow
+pip install psutil
 ```
 
 Or install from the requirements file:
@@ -72,7 +69,7 @@ pip install -r requirements.txt
 
 ### 3. No other dependencies required
 
-`tkinter`, `subprocess`, `os`, `re`, `webbrowser` are all Python standard library.
+`tkinter`, `subprocess`, `os`, `re`, `math`, `webbrowser` are all Python standard library. The procedural ops panel (radar, scan line, blinking indicators) requires no external packages.
 
 ---
 
@@ -102,17 +99,23 @@ The application has a **persistent left operations panel** and two tabs: **Port 
 
 ### Persistent Operations Panel
 
-A fixed 185px left panel visible across all tabs. Acts as the application identity and global runtime monitoring dashboard.
+A fixed 210px left panel visible across all tabs. Acts as the application identity and global runtime monitoring dashboard. Entirely procedural — no external image assets or dependencies required.
 
-#### Branding assets
-- `assets/images/head.png` — "TASKKILLER 3000 / RUNTIME OPERATIONS MONITOR" banner, scaled to panel width
-- `assets/images/radar.png` — Green radar sweep, 155×155px, displayed below the banner
+#### Terminal-style branding (Canvas)
+- `TASKKILLER 3000` rendered in Consolas 13pt bold green — integrated into the UI as Canvas text
+- `RUNTIME OPS MONITOR` subtitle in dim green below
+- Slow horizontal scan line (~22fps) scrolls across the header — single coordinate update per frame, negligible CPU
 
-#### Atmospheric effects (Pillow required)
-- **Radar pulse** — 4-frame brightness cycle at 1800ms/step (barely perceptible, low CPU)
-- **Header flicker** — 80ms dim event at 6–14s random intervals — CRT screen aesthetic
+#### Procedural radar (Canvas)
+- Rotating sweep line at 2°/frame, ~12fps — one full revolution every ~15 seconds
+- 22-step afterglow trail behind the sweep (brightness falls off linearly)
+- Random blip dots seed at the sweep tip (4% chance per frame), fade via exponential decay
+- Concentric rings, crosshairs, and 30° tick marks drawn once at startup — never redrawn
+- All animation via `after()` scheduling — no threads, no busy loops
 
-Without Pillow, both images display statically with no effects.
+#### Live telemetry indicator dots
+- `●` blinks next to NODE.JS (green), PYTHON (blue), ORPHANED (yellow)
+- Each dot blinks independently at a random 1600–2800ms interval — never sync
 
 #### Live telemetry
 | Metric | Description |
@@ -390,25 +393,27 @@ You're on Python 3.9 or older. Upgrade to Python 3.10+.
 
 ```
 taskkiller-3000/
-├── port_manager.py           # Main application (single file)
-├── run_port_manager.bat      # Windows launcher
-├── requirements.txt          # psutil + Pillow (both optional)
+├── port_manager.py                      # Main application (single file)
+├── run_port_manager.bat                 # Windows launcher
+├── requirements.txt                     # psutil (optional)
 ├── .gitignore
 ├── README.md
-├── CLAUDE.md                 # AI assistant instructions
-├── PROJECT_STATE.md          # Project status and roadmap
+├── CLAUDE.md                            # AI assistant instructions
+├── PROJECT_STATE.md                     # Project status and roadmap
 ├── assets/
-│   └── images/
-│       ├── head.png          # Branding banner (TASKKILLER 3000)
-│       └── radar.png         # Atmospheric radar sweep
+│   └── images/                          # Retained for reference (not used by app)
+│       ├── head.png
+│       └── radar.png
 ├── screenshots/
-│   ├── main.png              # Port Scanner tab
-│   ├── node-inspector.png    # earlier screenshot (kept for git history)
-│   └── runtime-inspector.png # Runtime Inspector tab (Node.js + Python)
+│   ├── ops-panel-port-scanner.png       # Port Scanner + ops panel
+│   ├── ops-panel-runtime-inspector.png  # Runtime Inspector + ops panel
+│   ├── main.png                         # Earlier Port Scanner screenshot
+│   ├── runtime-inspector.png            # Earlier Runtime Inspector screenshot
+│   └── node-inspector.png               # Historical (kept for git history)
 └── .github/
     └── workflows/
-        ├── claude.yml                # Claude PR assistant
-        └── claude-code-review.yml   # Claude code review
+        ├── claude.yml                   # Claude PR assistant
+        └── claude-code-review.yml       # Claude code review
 ```
 
 ---
