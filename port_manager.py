@@ -1,10 +1,11 @@
 """
-Port Process Manager
+TaskKiller 3000
 ====================
-A Windows desktop application to identify and kill processes
-that are listening on specific localhost ports (e.g. 3000, 5173, 8080).
+A Windows desktop utility for process management and developer environment intelligence.
 
-Author: Generated for Isidoros
+- Port Scanner:    identify and kill processes listening on localhost ports
+- Node Inspector:  inspect, understand, and control Node.js dev processes
+
 Requires: Python 3.10+, tkinter (bundled with Python), psutil (optional but recommended)
 
 Install dependency (optional but recommended):
@@ -14,12 +15,14 @@ Run:
     python port_manager.py
 """
 
+import dataclasses
+import json
 import os
 import re
-import sys
 import subprocess
 import webbrowser
 from datetime import datetime
+from pathlib import Path
 from tkinter import (
     Tk, Frame, Label, Entry, Button, Text, Scrollbar, StringVar,
     IntVar, Checkbutton, END, DISABLED, NORMAL, messagebox,
@@ -34,7 +37,7 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Theme constants (dark theme)
+# Theme constants
 # ---------------------------------------------------------------------------
 BG_DARK       = "#1e1e1e"
 BG_PANEL      = "#252526"
@@ -50,7 +53,6 @@ BTN_VERIFY_HV = "#2ecc71"
 BTN_QUICK     = "#3c3c3c"
 BTN_QUICK_HV  = "#505050"
 
-# Colors used to tag process names in the output log
 PROCESS_COLORS = {
     "node":     "#2ecc71",
     "python":   "#3498db",
@@ -67,7 +69,6 @@ PROCESS_COLORS = {
     "unknown":  "#e74c3c",
 }
 
-# Human-readable labels for the scanner dashboard Type column
 PROCESS_LABELS: dict[str, str] = {
     "node":     "Node.js",
     "npm":      "Node.js",
@@ -83,40 +84,636 @@ PROCESS_LABELS: dict[str, str] = {
     "java":     "Java",
 }
 
-# Ports shown in the scanner dashboard
 SCAN_PORTS = ["3000", "3001", "4200", "5000", "5173", "8000", "8080", "11434"]
 
-# Processes this tool will never kill
 PROTECTED_PROCESSES = frozenset({
-    "system",
-    "svchost.exe",
-    "lsass.exe",
-    "csrss.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "smss.exe",
-    "services.exe",
-    "explorer.exe",
-    "dwm.exe",
-    "spoolsv.exe",
-    "registry",
-    "memory compression",
-    "taskhostw.exe",
-    "sihost.exe",
-    "fontdrvhost.exe",
+    "system", "svchost.exe", "lsass.exe", "csrss.exe", "wininit.exe",
+    "winlogon.exe", "smss.exe", "services.exe", "explorer.exe", "dwm.exe",
+    "spoolsv.exe", "registry", "memory compression", "taskhostw.exe",
+    "sihost.exe", "fontdrvhost.exe",
 })
+
+# Script patterns checked in order — first match wins
+NODE_SCRIPT_PATTERNS: dict[str, str] = {
+    "mcp":       "MCP Server",
+    "vite":      "Vite",
+    "next":      "Next.js",
+    "nuxt":      "Nuxt",
+    "svelte":    "Svelte",
+    "remix":     "Remix",
+    "webpack":   "Webpack",
+    "nodemon":   "Nodemon",
+    "ts-node":   "ts-node",
+    "tsx":       "ts-node",
+    "vitest":    "Vitest",
+    "jest":      "Jest",
+    "mocha":     "Mocha",
+    "express":   "Express",
+    "fastify":   "Fastify",
+    "@nestjs":   "NestJS",
+    "strapi":    "Strapi",
+    "prisma":    "Prisma",
+    "esbuild":   "esbuild",
+    "rollup":    "Rollup",
+    "turbo":     "Turborepo",
+    "electron":  "Electron",
+    "storybook": "Storybook",
+    "tsc":       "TypeScript",
+}
 
 
 # ---------------------------------------------------------------------------
-# Main application
+# Process data model
+# ---------------------------------------------------------------------------
+@dataclasses.dataclass
+class ProcessInfo:
+    pid:          int
+    ppid:         int
+    name:         str
+    exe:          str
+    cmdline:      list[str]
+    cwd:          str
+    proc_status:  str
+    cpu_percent:  float
+    ram_mb:       float
+    ports:        list[str]
+    project_name: str
+    script_type:  str
+    is_orphaned:  bool
+    is_zombie:    bool
+    children:     list[int]
+
+    @property
+    def status_display(self) -> str:
+        if self.is_zombie:
+            return "ZOMBIE"
+        if self.is_orphaned:
+            return "ORPHANED"
+        return self.proc_status.upper()
+
+    @property
+    def cmdline_str(self) -> str:
+        return " ".join(self.cmdline) if self.cmdline else "<unknown>"
+
+
+# ---------------------------------------------------------------------------
+# Modular inspector base — subclass to add Python / Ollama / Docker / etc.
+# ---------------------------------------------------------------------------
+class DevProcessInspector:
+    """
+    Override PROCESS_NAMES and SCRIPT_PATTERNS to create a new inspector type.
+    Each subclass handles one process family (node, python, ollama, docker…).
+    """
+    PROCESS_NAMES:  tuple[str, ...] = ()
+    SCRIPT_PATTERNS: dict[str, str] = {}
+    DEFAULT_LABEL:  str = "Process"
+
+    def __init__(self):
+        # Persistent Process objects so cpu_percent(interval=None) accumulates
+        self._cpu_procs: dict[int, "psutil.Process"] = {}
+
+    def collect(self, port_map: dict[int, list[str]]) -> list[ProcessInfo]:
+        if not PSUTIL_AVAILABLE:
+            return []
+
+        results: list[ProcessInfo] = []
+        found_pids: set[int] = set()
+
+        try:
+            all_pids = {p.pid for p in psutil.process_iter(["pid"])}
+        except Exception:
+            all_pids = set()
+
+        for proc in psutil.process_iter(["pid", "ppid", "name", "status"]):
+            try:
+                if proc.info["name"].lower() not in self.PROCESS_NAMES:
+                    continue
+                pid = proc.info["pid"]
+                found_pids.add(pid)
+                if pid not in self._cpu_procs:
+                    self._cpu_procs[pid] = proc
+                    try:
+                        proc.cpu_percent(interval=None)  # seed; returns 0.0
+                    except Exception:
+                        pass
+                info = self._gather(self._cpu_procs[pid], port_map, all_pids)
+                if info:
+                    results.append(info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
+                continue
+
+        for dead in list(self._cpu_procs):
+            if dead not in found_pids:
+                del self._cpu_procs[dead]
+
+        return results
+
+    def _gather(
+        self,
+        proc: "psutil.Process",
+        port_map: dict[int, list[str]],
+        all_pids: set[int],
+    ) -> "ProcessInfo | None":
+        try:
+            with proc.oneshot():
+                pid  = proc.pid
+                ppid = proc.ppid()
+                name = proc.name()
+                try:    exe = proc.exe()
+                except Exception: exe = ""
+                try:    cmdline = proc.cmdline()
+                except Exception: cmdline = []
+                try:    cwd = proc.cwd()
+                except Exception: cwd = ""
+                proc_status = proc.status()
+                try:    cpu_pct = proc.cpu_percent(interval=None)
+                except Exception: cpu_pct = 0.0
+                try:    ram_mb = proc.memory_info().rss / (1024 * 1024)
+                except Exception: ram_mb = 0.0
+                try:    children = [c.pid for c in proc.children()]
+                except Exception: children = []
+
+            return ProcessInfo(
+                pid=pid, ppid=ppid, name=name, exe=exe, cmdline=cmdline,
+                cwd=cwd, proc_status=proc_status, cpu_percent=cpu_pct,
+                ram_mb=ram_mb, ports=port_map.get(pid, []),
+                project_name=self._detect_project(cwd),
+                script_type=self._classify_script(cmdline),
+                is_orphaned=(ppid != 0 and ppid not in all_pids),
+                is_zombie=(proc_status == "zombie"),
+                children=children,
+            )
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return None
+
+    def _detect_project(self, cwd: str) -> str:
+        if not cwd:
+            return "<unknown>"
+        try:
+            p = Path(cwd)
+            for candidate in (p, p.parent, p.parent.parent):
+                try:
+                    pkg = candidate / "package.json"
+                    if pkg.exists():
+                        data = json.loads(pkg.read_text(encoding="utf-8", errors="ignore"))
+                        name = (data.get("name") or "").strip()
+                        if name:
+                            return name
+                except Exception:
+                    pass
+            return p.name or "<unknown>"
+        except Exception:
+            return "<unknown>"
+
+    def _classify_script(self, cmdline: list[str]) -> str:
+        if not cmdline:
+            return self.DEFAULT_LABEL
+        cmd = " ".join(cmdline).lower()
+        for pattern, label in self.SCRIPT_PATTERNS.items():
+            if pattern in cmd:
+                return label
+        return self.DEFAULT_LABEL
+
+
+# ---------------------------------------------------------------------------
+# Node.js inspector
+# ---------------------------------------------------------------------------
+class NodeInspector(DevProcessInspector):
+    PROCESS_NAMES   = ("node.exe", "node")
+    DEFAULT_LABEL   = "Node.js"
+    SCRIPT_PATTERNS = NODE_SCRIPT_PATTERNS
+
+
+# ---------------------------------------------------------------------------
+# Node Inspector UI panel
+# ---------------------------------------------------------------------------
+class NodeInspectorPanel:
+
+    def __init__(self, parent: Frame, app: "PortProcessManager"):
+        self.parent    = parent
+        self.app       = app
+        self.root      = app.root
+        self.inspector = NodeInspector()
+        self.processes: list[ProcessInfo] = []
+        self._auto_var  = IntVar(value=0)
+        self._auto_job  = None
+        self._port_map: dict[int, list[str]] = {}
+        self._sort_col  = "pid"
+        self._sort_rev  = False
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        toolbar = Frame(self.parent, bg=BG_PANEL, padx=10, pady=8)
+        toolbar.pack(fill="x")
+
+        Label(
+            toolbar, text="Node.js Process Inspector",
+            bg=BG_PANEL, fg=FG_TEXT, font=("Segoe UI", 11, "bold"),
+        ).pack(side="left", padx=(0, 16))
+
+        self._btn(toolbar, "Refresh",       self.refresh,         ACCENT,     ACCENT_HOVER ).pack(side="left", padx=(0, 4))
+        self._btn(toolbar, "Safe Stop",     self._safe_stop,      BTN_VERIFY, BTN_VERIFY_HV).pack(side="left", padx=4)
+        self._btn(toolbar, "Force Kill",    self._force_kill,     BTN_KILL,   BTN_KILL_HVR ).pack(side="left", padx=4)
+        self._btn(toolbar, "Kill All Node", self._kill_all_node,  BTN_KILL,   BTN_KILL_HVR ).pack(side="left", padx=4)
+
+        Checkbutton(
+            toolbar, text="Auto (3s)", variable=self._auto_var,
+            command=self._toggle_auto,
+            bg=BG_PANEL, fg=FG_TEXT, selectcolor=BG_DARK,
+            activebackground=BG_PANEL, activeforeground=FG_TEXT,
+            font=("Segoe UI", 10),
+        ).pack(side="left", padx=10)
+
+        self._status_var = StringVar(value="")
+        Label(
+            toolbar, textvariable=self._status_var,
+            bg=BG_PANEL, fg=FG_DIM, font=("Segoe UI", 9),
+        ).pack(side="right", padx=4)
+
+        # Paned: treeview (top) + detail (bottom)
+        paned = ttk.PanedWindow(self.parent, orient="vertical")
+        paned.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+
+        tree_frame = Frame(paned, bg=BG_DARK)
+        paned.add(tree_frame, weight=3)
+
+        cols = ("pid", "ppid", "status", "ports", "cpu", "ram",
+                "project", "script", "cwd")
+        self.tree = ttk.Treeview(
+            tree_frame, columns=cols, show="headings",
+            style="Dashboard.Treeview", selectmode="browse",
+        )
+        for cid, heading, width, anchor in (
+            ("pid",     "PID",        65,  "center"),
+            ("ppid",    "PPID",       65,  "center"),
+            ("status",  "Status",     90,  "center"),
+            ("ports",   "Port(s)",    90,  "center"),
+            ("cpu",     "CPU%",       60,  "center"),
+            ("ram",     "RAM MB",     70,  "center"),
+            ("project", "Project",   150,  "w"),
+            ("script",  "Script",    110,  "center"),
+            ("cwd",     "Working Dir", 280, "w"),
+        ):
+            self.tree.heading(cid, text=heading,
+                              command=lambda c=cid: self._sort_by(c))
+            self.tree.column(cid, width=width, minwidth=50,
+                             anchor=anchor, stretch=(cid == "cwd"))
+
+        self.tree.tag_configure("running",  foreground="#2ecc71")
+        self.tree.tag_configure("orphaned", foreground="#f1c40f")
+        self.tree.tag_configure("zombie",   foreground="#e74c3c")
+
+        sb_v = ttk.Scrollbar(tree_frame, orient="vertical",   command=self.tree.yview)
+        sb_h = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=sb_v.set, xscrollcommand=sb_h.set)
+        sb_v.pack(side="right",  fill="y")
+        sb_h.pack(side="bottom", fill="x")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+
+        # Detail panel
+        detail_frame = Frame(paned, bg=BG_DARK)
+        paned.add(detail_frame, weight=1)
+
+        Label(
+            detail_frame, text="Process Details",
+            bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=6, pady=(4, 2))
+
+        di = Frame(detail_frame, bg=BG_DARK)
+        di.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+        self.detail = Text(
+            di, wrap="word", bg=BG_OUTPUT, fg=FG_TEXT,
+            insertbackground=FG_TEXT, font=("Consolas", 10),
+            relief="flat", padx=10, pady=8, state=DISABLED,
+        )
+        sb_d = Scrollbar(di, command=self.detail.yview)
+        self.detail.configure(yscrollcommand=sb_d.set)
+        self.detail.pack(side="left", fill="both", expand=True)
+        sb_d.pack(side="right", fill="y")
+
+        for tag, fg, bold in (
+            ("key",    ACCENT,    True),
+            ("val",    FG_TEXT,   False),
+            ("ok",     "#2ecc71", False),
+            ("warn",   "#f1c40f", False),
+            ("error",  "#e74c3c", False),
+            ("header", ACCENT,    True),
+            ("dim",    FG_DIM,    False),
+        ):
+            self.detail.tag_configure(
+                tag, foreground=fg,
+                font=("Consolas", 10, "bold") if bold else ("Consolas", 10),
+            )
+
+        if not PSUTIL_AVAILABLE:
+            self._show_no_psutil()
+
+    def _btn(self, parent, text, cmd, bg=ACCENT, hover=ACCENT_HOVER, width=None):
+        b = Button(
+            parent, text=text, command=cmd, bg=bg, fg="white",
+            relief="flat", font=("Segoe UI", 10, "bold"),
+            activebackground=hover, activeforeground="white",
+            cursor="hand2", padx=10, pady=6, borderwidth=0,
+        )
+        if width:
+            b.config(width=width)
+        b.bind("<Enter>", lambda e: b.config(bg=hover))
+        b.bind("<Leave>", lambda e: b.config(bg=bg))
+        return b
+
+    # ------------------------------------------------------------------
+    # Data
+    # ------------------------------------------------------------------
+    def refresh(self):
+        self._port_map = self._build_port_map()
+        self.processes = self.inspector.collect(self._port_map)
+        self._populate_tree()
+
+        count   = len(self.processes)
+        orphans = sum(1 for p in self.processes if p.is_orphaned)
+        zombies = sum(1 for p in self.processes if p.is_zombie)
+        ts      = datetime.now().strftime("%H:%M:%S")
+        parts   = [f"{count} process{'es' if count != 1 else ''}"]
+        if orphans: parts.append(f"{orphans} orphaned")
+        if zombies: parts.append(f"{zombies} zombie")
+        self._status_var.set("  |  ".join(parts) + f"  —  {ts}")
+
+    def _build_port_map(self) -> dict[int, list[str]]:
+        result: dict[int, list[str]] = {}
+        if PSUTIL_AVAILABLE:
+            try:
+                for conn in psutil.net_connections(kind="inet"):
+                    if conn.status == "LISTEN" and conn.pid:
+                        result.setdefault(conn.pid, []).append(str(conn.laddr.port))
+                return result
+            except Exception:
+                pass
+        try:
+            out = subprocess.run(
+                ["netstat", "-ano"], capture_output=True, text=True, shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            for ln in out.stdout.splitlines():
+                if "LISTENING" not in ln.upper():
+                    continue
+                parts = ln.split()
+                if len(parts) < 5:
+                    continue
+                m = re.search(r":(\d+)$", parts[1])
+                if m and parts[-1].isdigit():
+                    result.setdefault(int(parts[-1]), []).append(m.group(1))
+        except Exception:
+            pass
+        return result
+
+    # ------------------------------------------------------------------
+    # Treeview
+    # ------------------------------------------------------------------
+    def _populate_tree(self):
+        sel = self.tree.selection()
+        sel_pid = int(sel[0]) if sel else None
+        self.tree.delete(*self.tree.get_children())
+
+        for p in sorted(self.processes, key=lambda x: x.pid):
+            tag     = "zombie" if p.is_zombie else ("orphaned" if p.is_orphaned else "running")
+            cwd_d   = ("..." + p.cwd[-47:]) if len(p.cwd) > 50 else p.cwd
+            self.tree.insert("", "end", iid=str(p.pid), values=(
+                p.pid, p.ppid, p.status_display,
+                ", ".join(p.ports) if p.ports else "—",
+                f"{p.cpu_percent:.1f}%",
+                f"{p.ram_mb:.0f}",
+                p.project_name, p.script_type, cwd_d,
+            ), tags=(tag,))
+
+        if sel_pid and self.tree.exists(str(sel_pid)):
+            self.tree.selection_set(str(sel_pid))
+
+    def _sort_by(self, col: str):
+        self._sort_rev = not self._sort_rev if self._sort_col == col else False
+        self._sort_col = col
+        numeric = {"pid", "ppid", "cpu", "ram"}
+
+        def key(iid):
+            v = self.tree.set(iid, col)
+            if col in numeric:
+                try:
+                    return float(v.replace("%", "").strip())
+                except Exception:
+                    return 0.0
+            return v.lower()
+
+        items = list(self.tree.get_children(""))
+        items.sort(key=key, reverse=self._sort_rev)
+        for i, iid in enumerate(items):
+            self.tree.move(iid, "", i)
+
+    # ------------------------------------------------------------------
+    # Selection + details
+    # ------------------------------------------------------------------
+    def _on_select(self, _event=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        pid  = int(sel[0])
+        proc = next((p for p in self.processes if p.pid == pid), None)
+        if proc:
+            self._show_details(proc)
+
+    def _show_details(self, p: ProcessInfo):
+        self.detail.config(state=NORMAL)
+        self.detail.delete("1.0", END)
+
+        def kv(k: str, v: str, vtag: str = "val"):
+            self.detail.insert(END, f"  {k:<22}", "key")
+            self.detail.insert(END, f"{v}\n", vtag)
+
+        self.detail.insert(END, f"  PID {p.pid}  —  {p.name}  [{p.script_type}]\n\n", "header")
+
+        status_tag = "error" if p.is_zombie else ("warn" if p.is_orphaned else "ok")
+        kv("Status:",       p.status_display, status_tag)
+        kv("PID:",          str(p.pid))
+        kv("Parent PID:",   str(p.ppid))
+        if p.children:
+            kv("Child PIDs:", ", ".join(str(c) for c in p.children))
+        kv("Listening Ports:", ", ".join(p.ports) if p.ports else "none")
+        kv("CPU:",          f"{p.cpu_percent:.2f}%")
+        kv("RAM:",          f"{p.ram_mb:.1f} MB")
+        kv("Project:",      p.project_name)
+        kv("Working Dir:",  p.cwd or "<unknown>")
+        kv("Executable:",   p.exe or "<unknown>")
+
+        self.detail.insert(END, "\n  Command Line:\n", "key")
+        self.detail.insert(END, f"  {p.cmdline_str}\n", "dim")
+
+        if p.is_orphaned:
+            self.detail.insert(
+                END, "\n  WARNING: Parent process no longer exists (orphaned).\n", "warn",
+            )
+        if p.is_zombie:
+            self.detail.insert(
+                END, "\n  WARNING: Process is a zombie (finished but not reaped).\n", "error",
+            )
+
+        self.detail.config(state=DISABLED)
+
+    def _show_no_psutil(self):
+        self.detail.config(state=NORMAL)
+        self.detail.insert(END, "\n  Node Inspector requires psutil.\n\n", "warn")
+        self.detail.insert(END, "  Install:  ", "val")
+        self.detail.insert(END, "pip install psutil\n\n", "key")
+        self.detail.insert(END, "  Then restart the application.\n", "dim")
+        self.detail.config(state=DISABLED)
+        self._status_var.set("psutil required — pip install psutil")
+
+    # ------------------------------------------------------------------
+    # Actions
+    # ------------------------------------------------------------------
+    def _get_selected(self) -> "ProcessInfo | None":
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        pid = int(sel[0])
+        return next((p for p in self.processes if p.pid == pid), None)
+
+    def _safe_stop(self):
+        proc = self._get_selected()
+        if not proc:
+            messagebox.showwarning("No Selection", "Select a Node process first.")
+            return
+        if not messagebox.askyesno(
+            "Safe Stop",
+            f"Send graceful stop to:\n\n"
+            f"  PID:     {proc.pid}\n"
+            f"  Project: {proc.project_name}\n"
+            f"  Script:  {proc.script_type}\n"
+            f"  Port(s): {', '.join(proc.ports) or 'none'}\n\n"
+            f"Process will be asked to exit gracefully.\n"
+            f"Use Force Kill if it does not terminate.",
+        ):
+            return
+        try:
+            r = subprocess.run(
+                ["taskkill", "/PID", str(proc.pid)],
+                capture_output=True, text=True, shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            if r.returncode == 0:
+                self._status_var.set(f"Safe stop sent to PID {proc.pid}")
+                self.root.after(3000, self.refresh)
+                self.root.after(3100, self.app.scan_all_ports)
+            else:
+                messagebox.showerror("Safe Stop Failed",
+                                     (r.stderr or r.stdout).strip() or "Unknown error.")
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+
+    def _force_kill(self):
+        proc = self._get_selected()
+        if not proc:
+            messagebox.showwarning("No Selection", "Select a Node process first.")
+            return
+        if proc.name.lower() in PROTECTED_PROCESSES:
+            messagebox.showerror("Blocked", f"'{proc.name}' is a protected system process.")
+            return
+        if not messagebox.askyesno(
+            "Force Kill",
+            f"Forcefully terminate:\n\n"
+            f"  PID:     {proc.pid}\n"
+            f"  Project: {proc.project_name}\n"
+            f"  Script:  {proc.script_type}\n"
+            f"  Port(s): {', '.join(proc.ports) or 'none'}\n\n"
+            f"This cannot be undone.",
+        ):
+            return
+        try:
+            r = subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/F"],
+                capture_output=True, text=True, shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            if r.returncode == 0:
+                self._status_var.set(f"PID {proc.pid} force-killed.")
+                self.root.after(500, self.refresh)
+                self.root.after(600, self.app.scan_all_ports)
+            else:
+                err = (r.stderr or r.stdout).strip()
+                if "access is denied" in err.lower():
+                    messagebox.showerror("Access Denied", "Run as Administrator.")
+                else:
+                    messagebox.showerror("Kill Failed", err or "Unknown error.")
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+
+    def _kill_all_node(self):
+        count = len(self.processes)
+        if count == 0:
+            messagebox.showinfo("No Processes", "No node.exe processes are running.")
+            return
+        if not messagebox.askyesno(
+            "Kill ALL Node Processes",
+            f"Forcefully terminate all {count} node.exe process(es)?\n\nThis cannot be undone.",
+        ):
+            return
+        try:
+            r = subprocess.run(
+                ["taskkill", "/IM", "node.exe", "/F"],
+                capture_output=True, text=True, shell=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            out = (r.stdout + r.stderr).strip()
+            if r.returncode != 0 and "not found" not in out.lower():
+                messagebox.showerror("Error", out)
+            else:
+                self._status_var.set("All node.exe processes terminated.")
+            self.root.after(500, self.refresh)
+            self.root.after(600, self.app.scan_all_ports)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc))
+
+    def _toggle_auto(self):
+        if self._auto_var.get():
+            self._auto_tick()
+        else:
+            if self._auto_job is not None:
+                try:
+                    self.root.after_cancel(self._auto_job)
+                except Exception:
+                    pass
+                self._auto_job = None
+
+    def _auto_tick(self):
+        if not self._auto_var.get():
+            return
+        try:
+            self.refresh()
+        except Exception:
+            pass
+        self._auto_job = self.root.after(3000, self._auto_tick)
+
+    def cancel_auto(self):
+        if self._auto_job is not None:
+            try:
+                self.root.after_cancel(self._auto_job)
+            except Exception:
+                pass
+            self._auto_job = None
+
+
+# ---------------------------------------------------------------------------
+# Main application — Port Scanner tab
 # ---------------------------------------------------------------------------
 class PortProcessManager:
 
     def __init__(self, root: Tk):
         self.root = root
-        self.root.title("Port Process Manager")
-        self.root.geometry("900x780")
-        self.root.minsize(700, 600)
+        self.root.title("TaskKiller 3000")
+        self.root.geometry("1200x860")
+        self.root.minsize(800, 620)
         self.root.configure(bg=BG_DARK)
 
         self.current_pid: int | None = None
@@ -125,49 +722,61 @@ class PortProcessManager:
         self.status_var = StringVar(value="READY")
         self._auto_refresh_job = None
 
-        self._setup_treeview_style()
+        self._setup_styles()
 
-        # Original layout preserved; scanner panel replaces quick ports bar
+        # Notebook
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill="both", expand=True, padx=6, pady=6)
+
+        self.port_tab = Frame(self.notebook, bg=BG_DARK)
+        self.notebook.add(self.port_tab, text="  Port Scanner  ")
+
+        self.node_tab = Frame(self.notebook, bg=BG_DARK)
+        self.notebook.add(self.node_tab, text="  Node Inspector  ")
+
+        # Build Port Scanner UI into port_tab
         self._build_top_section()
         self._build_scanner_panel()
         self._build_action_buttons()
         self._build_output_area()
         self._build_status_bar()
 
-        self.log("Application started.", level="INFO")
+        # Build Node Inspector UI into node_tab
+        self.node_panel = NodeInspectorPanel(self.node_tab, self)
+
+        # Lazy-load Node Inspector on first visit
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_change)
+
+        self.log("TaskKiller 3000 started.", level="INFO")
         if not PSUTIL_AVAILABLE:
-            self.log(
-                "psutil not detected — install with: pip install psutil",
-                level="WARN",
-            )
+            self.log("psutil not detected — install with: pip install psutil", level="WARN")
         else:
             self.log(f"psutil {psutil.__version__} detected.", level="INFO")
 
         self.root.after(150, self.scan_all_ports)
 
+    def _on_tab_change(self, _event=None):
+        idx = self.notebook.index(self.notebook.select())
+        if idx == 1 and not self.node_panel.processes:
+            self.root.after(50, self.node_panel.refresh)
+
     # ------------------------------------------------------------------
-    # ttk style (treeview only — no theme change to the rest of the UI)
+    # Styles
     # ------------------------------------------------------------------
-    def _setup_treeview_style(self):
+    def _setup_styles(self):
         style = ttk.Style()
         style.theme_use("clam")
 
         style.configure(
             "Dashboard.Treeview",
-            background=BG_PANEL,
-            foreground=FG_TEXT,
-            fieldbackground=BG_PANEL,
-            rowheight=26,
-            font=("Consolas", 10),
-            borderwidth=0,
+            background=BG_PANEL, foreground=FG_TEXT,
+            fieldbackground=BG_PANEL, rowheight=26,
+            font=("Consolas", 10), borderwidth=0,
         )
         style.configure(
             "Dashboard.Treeview.Heading",
-            background=BG_DARK,
-            foreground=FG_DIM,
-            font=("Segoe UI", 9, "bold"),
-            relief="flat",
-            borderwidth=0,
+            background=BG_DARK, foreground=FG_DIM,
+            font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0,
         )
         style.map(
             "Dashboard.Treeview",
@@ -175,17 +784,28 @@ class PortProcessManager:
             foreground=[("selected", "white")],
         )
 
+        style.configure("TNotebook", background=BG_DARK, borderwidth=0)
+        style.configure(
+            "TNotebook.Tab",
+            background=BG_PANEL, foreground=FG_DIM,
+            font=("Segoe UI", 10), padding=[14, 7],
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", BG_DARK), ("active", "#333333")],
+            foreground=[("selected", FG_TEXT),  ("active", FG_TEXT)],
+        )
+        style.configure("TPanedwindow", background=BG_DARK)
+
     # ------------------------------------------------------------------
-    # UI construction  (same order as the original)
+    # Port Scanner UI construction
     # ------------------------------------------------------------------
     def _build_top_section(self):
-        top = Frame(self.root, bg=BG_PANEL, padx=12, pady=10)
+        top = Frame(self.port_tab, bg=BG_PANEL, padx=12, pady=10)
         top.pack(fill="x", padx=10, pady=(10, 4))
 
-        Label(
-            top, text="Port:", bg=BG_PANEL, fg=FG_TEXT,
-            font=("Segoe UI", 11, "bold"),
-        ).pack(side="left", padx=(0, 8))
+        Label(top, text="Port:", bg=BG_PANEL, fg=FG_TEXT,
+              font=("Segoe UI", 11, "bold")).pack(side="left", padx=(0, 8))
 
         self.port_entry = Entry(
             top, width=10, font=("Consolas", 12),
@@ -206,48 +826,30 @@ class PortProcessManager:
         )
         self.auto_chk.pack(side="right")
 
-        self._make_button(
-            top, "Open in Browser", self.open_in_browser,
-            bg=BTN_QUICK, hover=BTN_QUICK_HV,
-        ).pack(side="right", padx=(0, 10))
+        self._make_button(top, "Open in Browser", self.open_in_browser,
+                          bg=BTN_QUICK, hover=BTN_QUICK_HV).pack(side="right", padx=(0, 10))
 
     def _build_scanner_panel(self):
-        """Multi-port dashboard — replaces the old quick ports button bar."""
-        outer = Frame(self.root, bg=BG_DARK, padx=10, pady=2)
+        outer = Frame(self.port_tab, bg=BG_DARK, padx=10, pady=2)
         outer.pack(fill="x", padx=10)
 
-        # Toolbar row
         toolbar = Frame(outer, bg=BG_DARK)
         toolbar.pack(fill="x", pady=(0, 4))
 
-        Label(
-            toolbar, text="Port Scanner", bg=BG_DARK, fg=FG_DIM,
-            font=("Segoe UI", 9, "bold"),
-        ).pack(side="left", padx=(0, 10))
+        Label(toolbar, text="Port Scanner", bg=BG_DARK, fg=FG_DIM,
+              font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 10))
 
-        self._make_button(
-            toolbar, "Scan All", self.scan_all_ports,
-            bg=ACCENT, hover=ACCENT_HOVER, width=10,
-        ).pack(side="left", padx=(0, 6))
-
-        self._make_button(
-            toolbar, "Kill All Node", self.kill_all_node,
-            bg=BTN_KILL, hover=BTN_KILL_HVR, width=14,
-        ).pack(side="left")
+        self._make_button(toolbar, "Scan All", self.scan_all_ports,
+                          bg=ACCENT, hover=ACCENT_HOVER, width=10).pack(side="left", padx=(0, 6))
+        self._make_button(toolbar, "Kill All Node", self.kill_all_node,
+                          bg=BTN_KILL, hover=BTN_KILL_HVR, width=14).pack(side="left")
 
         self._scan_time_var = StringVar(value="")
-        Label(
-            toolbar, textvariable=self._scan_time_var,
-            bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 8),
-        ).pack(side="right")
+        Label(toolbar, textvariable=self._scan_time_var,
+              bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 8)).pack(side="right")
+        Label(toolbar, text="double-click row to load port →",
+              bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 8)).pack(side="right", padx=(0, 12))
 
-        Label(
-            toolbar,
-            text="double-click row to load port →",
-            bg=BG_DARK, fg=FG_DIM, font=("Segoe UI", 8),
-        ).pack(side="right", padx=(0, 12))
-
-        # Treeview
         tree_frame = Frame(outer, bg=BG_DARK)
         tree_frame.pack(fill="x")
 
@@ -257,7 +859,6 @@ class PortProcessManager:
             style="Dashboard.Treeview", selectmode="browse",
             height=len(SCAN_PORTS),
         )
-
         for cid, heading, width, anchor in (
             ("port",    "Port",    70,  "center"),
             ("status",  "Status",  100, "center"),
@@ -273,8 +874,7 @@ class PortProcessManager:
         self.scan_tree.tag_configure("protected", foreground="#f1c40f")
         self.scan_tree.tag_configure("free",      foreground=FG_DIM)
 
-        sb = ttk.Scrollbar(tree_frame, orient="vertical",
-                           command=self.scan_tree.yview)
+        sb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.scan_tree.yview)
         self.scan_tree.configure(yscrollcommand=sb.set)
         self.scan_tree.pack(side="left", fill="x", expand=True)
         sb.pack(side="right", fill="y")
@@ -283,33 +883,20 @@ class PortProcessManager:
         self.scan_tree.bind("<Return>",   self._on_scan_row_select)
 
     def _build_action_buttons(self):
-        """The three main step buttons: Find PID / Verify / Kill."""
-        actions = Frame(self.root, bg=BG_DARK, padx=12, pady=8)
+        actions = Frame(self.port_tab, bg=BG_DARK, padx=12, pady=8)
         actions.pack(fill="x", padx=10)
 
-        self._make_button(
-            actions, "1) Find PID", self.find_pid,
-            bg=ACCENT, hover=ACCENT_HOVER, width=18,
-        ).pack(side="left", padx=4)
-
-        self._make_button(
-            actions, "2) Verify Process", self.verify_process,
-            bg=BTN_VERIFY, hover=BTN_VERIFY_HV, width=18,
-        ).pack(side="left", padx=4)
-
-        self._make_button(
-            actions, "3) Kill Process", self.kill_process,
-            bg=BTN_KILL, hover=BTN_KILL_HVR, width=18,
-        ).pack(side="left", padx=4)
-
-        self._make_button(
-            actions, "Clear Output", self.clear_output,
-            bg=BTN_QUICK, hover=BTN_QUICK_HV, width=14,
-        ).pack(side="right", padx=4)
+        self._make_button(actions, "1) Find PID",      self.find_pid,
+                          bg=ACCENT, hover=ACCENT_HOVER, width=18).pack(side="left", padx=4)
+        self._make_button(actions, "2) Verify Process", self.verify_process,
+                          bg=BTN_VERIFY, hover=BTN_VERIFY_HV, width=18).pack(side="left", padx=4)
+        self._make_button(actions, "3) Kill Process",  self.kill_process,
+                          bg=BTN_KILL, hover=BTN_KILL_HVR, width=18).pack(side="left", padx=4)
+        self._make_button(actions, "Clear Output",     self.clear_output,
+                          bg=BTN_QUICK, hover=BTN_QUICK_HV, width=14).pack(side="right", padx=4)
 
     def _build_output_area(self):
-        """The big scrollable console output."""
-        wrapper = Frame(self.root, bg=BG_DARK, padx=12, pady=6)
+        wrapper = Frame(self.port_tab, bg=BG_DARK, padx=12, pady=6)
         wrapper.pack(fill="both", expand=True, padx=10, pady=(0, 4))
 
         self.output = Text(
@@ -335,27 +922,21 @@ class PortProcessManager:
                                       font=("Consolas", 10, "bold"))
 
     def _build_status_bar(self):
-        """Bottom status bar."""
-        bar = Frame(self.root, bg=BG_PANEL, padx=12, pady=6)
+        bar = Frame(self.port_tab, bg=BG_PANEL, padx=12, pady=6)
         bar.pack(fill="x", side="bottom")
 
-        Label(
-            bar, text="Status:", bg=BG_PANEL, fg=FG_DIM,
-            font=("Segoe UI", 9),
-        ).pack(side="left")
+        Label(bar, text="Status:", bg=BG_PANEL, fg=FG_DIM,
+              font=("Segoe UI", 9)).pack(side="left")
 
         self.status_label = Label(
             bar, textvariable=self.status_var,
-            bg=BG_PANEL, fg="#2ecc71",
-            font=("Segoe UI", 10, "bold"),
+            bg=BG_PANEL, fg="#2ecc71", font=("Segoe UI", 10, "bold"),
         )
         self.status_label.pack(side="left", padx=8)
 
         engine = "psutil" if PSUTIL_AVAILABLE else "tasklist (fallback)"
-        Label(
-            bar, text=f"Inspection engine: {engine}",
-            bg=BG_PANEL, fg=FG_DIM, font=("Segoe UI", 9),
-        ).pack(side="right")
+        Label(bar, text=f"Inspection engine: {engine}",
+              bg=BG_PANEL, fg=FG_DIM, font=("Segoe UI", 9)).pack(side="right")
 
     # ------------------------------------------------------------------
     # Helpers
@@ -415,7 +996,7 @@ class PortProcessManager:
         self.output.config(state=DISABLED)
         self.log("Output cleared.", level="INFO")
 
-    def _validate_port(self) -> str | None:
+    def _validate_port(self) -> "str | None":
         raw = self.port_entry.get().strip()
         if not raw:
             self.log("Port input is empty.", level="ERROR")
@@ -427,7 +1008,7 @@ class PortProcessManager:
             return None
         port = int(raw)
         if not (0 < port < 65536):
-            self.log(f"Port {port} is out of range (1-65535).", level="ERROR")
+            self.log(f"Port {port} out of range (1–65535).", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
             return None
         return str(port)
@@ -464,13 +1045,12 @@ class PortProcessManager:
         return "<unknown>"
 
     # ------------------------------------------------------------------
-    # Scanner — single netstat pass, populates dashboard treeview
+    # Scanner
     # ------------------------------------------------------------------
     def scan_all_ports(self):
         try:
             result = subprocess.run(
-                ["netstat", "-ano"],
-                capture_output=True, text=True, shell=False,
+                ["netstat", "-ano"], capture_output=True, text=True, shell=False,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except Exception as exc:
@@ -478,7 +1058,6 @@ class PortProcessManager:
             self.log(f"netstat failed: {exc}", level="ERROR")
             return
 
-        # Build port → pid map from LISTENING rows in one pass
         listening: dict[str, int] = {}
         for ln in result.stdout.splitlines():
             if "LISTENING" not in ln.upper():
@@ -493,9 +1072,7 @@ class PortProcessManager:
             if pid_str.isdigit():
                 listening[m.group(1)] = int(pid_str)
 
-        # Clear and repopulate treeview
         self.scan_tree.delete(*self.scan_tree.get_children())
-
         for port in SCAN_PORTS:
             if port in listening:
                 pid   = listening[port]
@@ -512,7 +1089,6 @@ class PortProcessManager:
 
         ts = datetime.now().strftime("%H:%M:%S")
         self._scan_time_var.set(f"Last scan: {ts}")
-
         occupied = sum(1 for p in SCAN_PORTS if p in listening)
         self._set_status(
             f"SCAN COMPLETE  —  {occupied}/{len(SCAN_PORTS)} occupied",
@@ -520,59 +1096,45 @@ class PortProcessManager:
         )
 
     def _on_scan_row_select(self, _event=None):
-        """Double-click a row → load port into entry, run Find PID."""
         sel = self.scan_tree.selection()
         if not sel:
             return
         values = self.scan_tree.item(sel[0], "values")
         port, status = values[0], values[1]
-
         self.port_entry.delete(0, END)
         self.port_entry.insert(0, port)
-
         if status == "OCCUPIED":
             self.find_pid()
         else:
             self._set_status(f"Port {port} is free", "#2ecc71")
 
     # ------------------------------------------------------------------
-    # STEP 1 — Find PID via netstat
+    # Step 1 — Find PID
     # ------------------------------------------------------------------
     def find_pid(self):
-        """Run `netstat -ano` and extract the LISTENING PID for the port."""
         port = self._validate_port()
         if port is None:
             return
         self.current_port = port
         self.log_header(f"STEP 1: Finding PID for port {port}")
-
         try:
             result = subprocess.run(
-                ["netstat", "-ano"],
-                capture_output=True, text=True, shell=False,
+                ["netstat", "-ano"], capture_output=True, text=True, shell=False,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except FileNotFoundError:
-            self.log("`netstat` not found. Are you sure this is Windows?",
-                     level="ERROR")
+            self.log("`netstat` not found.", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
             return
         except Exception as exc:
-            self.log(f"Failed to run netstat: {exc}", level="ERROR")
-            self._set_status("ERROR", "#e74c3c")
-            return
-
-        if result.returncode != 0 and not result.stdout:
-            self.log(f"netstat returned non-zero: {result.stderr.strip()}",
-                     level="ERROR")
+            self.log(f"netstat failed: {exc}", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
             return
 
         needle   = f":{port}"
         matching = [ln for ln in result.stdout.splitlines() if needle in ln]
-
         if not matching:
-            self.log(f"No netstat entries found for port {port}.", level="WARN")
+            self.log(f"No netstat entries for port {port}.", level="WARN")
             self.current_pid = None
             self._set_status("READY", "#f1c40f")
             return
@@ -588,9 +1150,7 @@ class PortProcessManager:
         if listening_pid is None:
             self.log(
                 f"No LISTENING entry on port {port}. "
-                "Entries shown are likely ESTABLISHED browser connections "
-                "(e.g. Chrome talking to a server) and are NOT the server "
-                "itself. Start your server or pick another port.",
+                "Entries are likely ESTABLISHED browser connections, not a server.",
                 level="WARN",
             )
             self.current_pid = None
@@ -601,13 +1161,7 @@ class PortProcessManager:
         self.log(f"Detected LISTENING PID: {listening_pid}", level="OK")
         self._set_status("PROCESS FOUND", "#2ecc71")
 
-    def _parse_listening_pid(self, lines: list[str], port: str) -> int | None:
-        """
-        Return the PID of the LISTENING entry for this port, or None.
-
-        TCP    0.0.0.0:3000     0.0.0.0:0     LISTENING   12345  <- target
-        TCP    127.0.0.1:51234  127.0.0.1:3000 ESTABLISHED 67890  <- ignored
-        """
+    def _parse_listening_pid(self, lines: list[str], port: str) -> "int | None":
         for ln in lines:
             if "LISTENING" not in ln.upper():
                 continue
@@ -620,10 +1174,9 @@ class PortProcessManager:
         return None
 
     # ------------------------------------------------------------------
-    # STEP 2 — Verify process details
+    # Step 2 — Verify
     # ------------------------------------------------------------------
     def verify_process(self):
-        """Show name, exe path, command line and status for the current PID."""
         if self.current_pid is None:
             self.log("No PID stored. Click 'Find PID' first.", level="WARN")
             return
@@ -638,14 +1191,10 @@ class PortProcessManager:
             p = psutil.Process(pid)
             with p.oneshot():
                 name = p.name()
-                try:
-                    exe = p.exe()
-                except (psutil.AccessDenied, psutil.NoSuchProcess):
-                    exe = "<access denied>"
-                try:
-                    cmdline = " ".join(p.cmdline()) or "<n/a>"
-                except (psutil.AccessDenied, psutil.NoSuchProcess):
-                    cmdline = "<access denied>"
+                try:    exe = p.exe()
+                except Exception: exe = "<access denied>"
+                try:    cmdline = " ".join(p.cmdline()) or "<n/a>"
+                except Exception: cmdline = "<access denied>"
                 status = p.status()
 
             self.output.config(state=NORMAL)
@@ -654,30 +1203,24 @@ class PortProcessManager:
             self.output.insert(END, "  Process Name   : ")
             self.output.config(state=DISABLED)
             self.log_process_name(f"  -> {name}")
-
             self.output.config(state=NORMAL)
             self.output.insert(END, f"  Executable     : {exe}\n")
             self.output.insert(END, f"  Command Line   : {cmdline}\n")
             self.output.insert(END, "  Status         : ")
             self.output.insert(END, f"{status}\n", "OK")
             self.output.config(state=DISABLED)
-
             self._classify_and_warn(name)
-
         except psutil.NoSuchProcess:
             self.log(f"PID {pid} no longer exists.", level="WARN")
             self._set_status("READY", "#f1c40f")
         except psutil.AccessDenied:
-            self.log(f"Access denied inspecting PID {pid}. "
-                     "Try running as Administrator.", level="ERROR")
+            self.log(f"Access denied on PID {pid}. Run as Administrator.", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
         except Exception as exc:
-            self.log(f"Unexpected error inspecting PID {pid}: {exc}",
-                     level="ERROR")
+            self.log(f"Unexpected error: {exc}", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
 
     def _verify_with_tasklist(self, pid: int):
-        """Fallback when psutil is not installed."""
         try:
             result = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/V", "/FO", "LIST"],
@@ -685,7 +1228,7 @@ class PortProcessManager:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except Exception as exc:
-            self.log(f"Failed to run tasklist: {exc}", level="ERROR")
+            self.log(f"tasklist failed: {exc}", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
             return
 
@@ -706,21 +1249,17 @@ class PortProcessManager:
             self._classify_and_warn(m.group(1))
 
     def _classify_and_warn(self, name: str):
-        """Identify process type and warn for browsers or protected processes."""
         if self._is_protected(name):
             self.log(
-                f"PROTECTED SYSTEM PROCESS: {name}. "
-                "Do not kill — terminating this process can destabilize Windows.",
+                f"PROTECTED SYSTEM PROCESS: {name}. Do not kill.",
                 level="ERROR",
             )
             return
-
         label = self._classify_process(name)
         if label == "Browser":
             self.log(
-                f"WARNING: '{name}' looks like a browser. Browsers connect "
-                "TO ports (ESTABLISHED) — they don't own them. "
-                "Step 1 should have filtered these. Double-check before killing.",
+                f"WARNING: '{name}' looks like a browser. "
+                "Browsers connect TO ports — they don't own them.",
                 level="WARN",
             )
         elif label == "Unknown":
@@ -729,28 +1268,21 @@ class PortProcessManager:
             self.log(f"Identified: {label} ({name}).", level="OK")
 
     # ------------------------------------------------------------------
-    # STEP 3 — Kill the process
+    # Step 3 — Kill
     # ------------------------------------------------------------------
     def kill_process(self):
-        """Confirm and then run `taskkill /PID <pid> /F`."""
         if self.current_pid is None:
             self.log("No PID stored. Click 'Find PID' first.", level="WARN")
             return
 
         name = self._get_process_name(self.current_pid)
-
-        # Hard block — no confirmation dialog for protected processes
         if self._is_protected(name):
             messagebox.showerror(
                 "Protected Process — Kill Blocked",
                 f"'{name}'  (PID {self.current_pid}) is a protected system process.\n\n"
-                "Terminating it can destabilize or crash Windows.\n\n"
                 "Operation blocked.",
             )
-            self.log(
-                f"Kill blocked: '{name}' (PID {self.current_pid}) is a protected system process.",
-                level="ERROR",
-            )
+            self.log(f"Kill blocked: '{name}' is protected.", level="ERROR")
             self._set_status("PROTECTED — BLOCKED", "#e74c3c")
             return
 
@@ -763,7 +1295,6 @@ class PortProcessManager:
             return
 
         self.log_header(f"STEP 3: Killing PID {self.current_pid} ({name})")
-
         try:
             result = subprocess.run(
                 ["taskkill", "/PID", str(self.current_pid), "/F"],
@@ -771,19 +1302,17 @@ class PortProcessManager:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except Exception as exc:
-            self.log(f"Failed to run taskkill: {exc}", level="ERROR")
+            self.log(f"taskkill failed: {exc}", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
             return
 
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
-
         if result.returncode == 0:
             if stdout:
                 self.log(stdout, level="OK")
             self.log(
-                f"PID {self.current_pid} terminated. "
-                f"Port {self.current_port} should now be free.",
+                f"PID {self.current_pid} terminated. Port {self.current_port} should now be free.",
                 level="OK",
             )
             self._set_status("PROCESS KILLED", "#2ecc71")
@@ -791,22 +1320,16 @@ class PortProcessManager:
             self.root.after(500, self.scan_all_ports)
         else:
             msg = stderr or stdout or "taskkill failed."
-            if "Access is denied" in msg or "denied" in msg.lower():
-                self.log(
-                    f"Access denied killing PID {self.current_pid}. "
-                    "Try running this app as Administrator.",
-                    level="ERROR",
-                )
+            if "access is denied" in msg.lower():
+                self.log("Access denied. Run as Administrator.", level="ERROR")
             else:
                 self.log(f"taskkill error: {msg}", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
 
     def kill_all_node(self):
-        """Kill every node.exe process on the machine."""
         if not messagebox.askyesno(
             "Kill ALL Node processes",
-            "This will forcefully terminate EVERY node.exe process "
-            "on this machine.\n\nProceed?",
+            "Forcefully terminate EVERY node.exe process on this machine?\n\nProceed?",
         ):
             self.log("Kill-all-node cancelled.", level="INFO")
             return
@@ -819,7 +1342,7 @@ class PortProcessManager:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except Exception as exc:
-            self.log(f"Failed to run taskkill: {exc}", level="ERROR")
+            self.log(f"taskkill failed: {exc}", level="ERROR")
             self._set_status("ERROR", "#e74c3c")
             return
 
@@ -841,7 +1364,6 @@ class PortProcessManager:
     # Extras
     # ------------------------------------------------------------------
     def open_in_browser(self):
-        """Open http://localhost:<port> in the default browser."""
         port = self._validate_port()
         if port is None:
             return
@@ -853,7 +1375,6 @@ class PortProcessManager:
             self.log(f"Failed to open browser: {exc}", level="ERROR")
 
     def _toggle_auto_refresh(self):
-        """Turn the 5-second auto refresh loop on/off."""
         if self.auto_refresh_var.get():
             self.log("Auto-refresh enabled (every 5 seconds).", level="INFO")
             self._auto_refresh_tick()
@@ -867,7 +1388,6 @@ class PortProcessManager:
                 self._auto_refresh_job = None
 
     def _auto_refresh_tick(self):
-        """Refresh scanner dashboard, then schedule the next tick."""
         if not self.auto_refresh_var.get():
             return
         try:
@@ -894,6 +1414,7 @@ def main():
                 root.after_cancel(app._auto_refresh_job)
             except Exception:
                 pass
+        app.node_panel.cancel_auto()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)

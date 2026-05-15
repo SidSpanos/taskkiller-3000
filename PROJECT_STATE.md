@@ -2,8 +2,8 @@
 
 ## Current Status
 
-Port Process Manager is stable and synced with GitHub.
-All planned v1 features shipped. Repository is clean.
+TaskKiller 3000 — stable. Node Inspector added (v2).
+Repository is clean. psutil recommended for full Node Inspector functionality.
 
 ## Architecture
 
@@ -14,6 +14,7 @@ All planned v1 features shipped. Repository is clean.
 
 ## Completed Features
 
+### Port Scanner (Tab 1)
 - Port lookup via `netstat -ano`
 - LISTENING process detection (ignores ESTABLISHED browser sessions)
 - Process verification (name, exe path, command line, status)
@@ -27,8 +28,28 @@ All planned v1 features shipped. Repository is clean.
 - Open port in default browser
 - Kill success auto-refreshes scanner
 - Dark theme with color-coded log output
-- README with screenshot, troubleshooting, port reference table
-- .gitignore, requirements.txt, CLAUDE.md
+
+### Node Inspector (Tab 2)
+- Detects all active node.exe processes via psutil
+- Shows PID, parent PID, status, port(s), CPU%, RAM, project name, script type, working dir
+- Detects orphaned processes (parent PID no longer exists)
+- Detects zombie processes (psutil status == zombie)
+- Detects parent/child process relationships (shows child PIDs)
+- Classifies script type: Vite, Next.js, Nuxt, Svelte, Remix, Webpack, Nodemon, MCP Server, ts-node, Jest, Vitest, Mocha, Express, Fastify, NestJS, Strapi, Prisma, esbuild, Rollup, Turborepo, Electron, Storybook, TypeScript
+- Detects project name from package.json (walks up to 2 parent dirs)
+- Safe Stop (graceful, no /F) + Force Kill options with confirmation dialogs
+- Kill All Node shortcut (also available in Port Scanner tab)
+- Sortable columns (click heading)
+- Process detail panel: full cmdline, ports, CPU, RAM, parent chain, cwd, exe, warnings
+- Auto-refresh (3s, toggle checkbox)
+- Port map via psutil.net_connections() with netstat fallback
+- Tab lazy-loads on first visit
+- Both tabs share port scanner data — kills in Node Inspector refresh Port Scanner too
+
+### Modular Inspector Framework
+- `DevProcessInspector` base class — subclass + set PROCESS_NAMES + SCRIPT_PATTERNS
+- `NodeInspector(DevProcessInspector)` — ready
+- Future inspectors: PythonInspector, OllamaInspector, DockerInspector, ElectronInspector
 
 ## Design Rules
 
@@ -47,5 +68,9 @@ None currently confirmed.
 
 - Port scanning for custom/non-standard ports beyond the dashboard list
 - Keyboard shortcut: Ctrl+Enter to run Find → Verify → Kill in sequence
-- Resizable/collapsible scanner panel
 - Tray icon / minimize-to-tray (optional, user-driven)
+- Python inspector tab (reuse DevProcessInspector framework)
+- Ollama inspector tab
+- Docker inspector tab (via docker ps subprocess or Docker SDK)
+- MCP server inspector (detect MCP config files, show which server owns which process)
+- Environment variable viewer for selected process (NODE_ENV, PORT, etc.)
