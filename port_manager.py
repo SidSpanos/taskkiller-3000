@@ -896,13 +896,15 @@ class PortProcessManager:
         # Status bar goes into port_tab first (reserves bottom space before content fill)
         self._build_status_bar()
 
-        # Horizontal content split: left (scanner) + right (telemetry)
+        # Horizontal content split: left (ops panel) + right (scanner content)
         self.port_content = Frame(self.port_tab, bg=BG_DARK)
         self.port_content.pack(fill="both", expand=True)
 
-        self.port_right = Frame(self.port_content, bg=BG_TELEM, width=210)
+        self.port_right = Frame(self.port_content, bg=BG_TELEM, width=185)
         self.port_right.pack_propagate(False)
-        self.port_right.pack(side="right", fill="y")
+        self.port_right.pack(side="left", fill="y")
+
+        Frame(self.port_content, bg="#2a2a2c", width=1).pack(side="left", fill="y")
 
         self.port_left = Frame(self.port_content, bg=BG_DARK)
         self.port_left.pack(side="left", fill="both", expand=True)
@@ -977,52 +979,50 @@ class PortProcessManager:
     def _build_telemetry_panel(self):
         p = self.port_right
 
-        # Header
-        Label(
-            p, text="TELEMETRY",
-            bg=BG_TELEM, fg=FG_DIM, font=("Consolas", 8, "bold"),
-            anchor="w",
-        ).pack(fill="x", padx=12, pady=(14, 0))
-        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(4, 10))
+        # Identity header
+        Label(p, text="TASKKILLER", bg=BG_TELEM, fg="#2d3840",
+              font=("Consolas", 13, "bold"), anchor="w").pack(fill="x", padx=12, pady=(12, 0))
+        Label(p, text="OPS CONSOLE", bg=BG_TELEM, fg=FG_DIM,
+              font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 4))
+        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(0, 10))
 
         def metric(label: str, var: StringVar, val_color: str = "#2ecc71") -> Label:
             Label(p, text=label, bg=BG_TELEM, fg=FG_DIM,
                   font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
             lbl = Label(p, textvariable=var, bg=BG_TELEM, fg=val_color,
-                        font=("Consolas", 14, "bold"), anchor="w")
-            lbl.pack(fill="x", padx=14, pady=(0, 10))
+                        font=("Consolas", 13, "bold"), anchor="w")
+            lbl.pack(fill="x", padx=14, pady=(0, 8))
             return lbl
 
-        metric("NODE.JS",         self._tv_node,   "#2ecc71")
-        metric("PYTHON",          self._tv_py,      "#3498db")
-        metric("PORTS ACTIVE",    self._tv_ports,   ACCENT)
-
+        metric("NODE.JS",      self._tv_node,   "#2ecc71")
+        metric("PYTHON",       self._tv_py,      "#3498db")
+        metric("PORTS ACTIVE", self._tv_ports,   ACCENT)
         self._orphan_label = metric("ORPHANED",  self._tv_orphan, "#2ecc71")
 
-        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(0, 10))
+        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(2, 10))
 
-        metric("AUTO-REFRESH",    self._tv_auto,    FG_MID)
-        metric("LAST SCAN",       self._tv_scan,    FG_MID)
+        metric("AUTO-REFRESH", self._tv_auto, FG_MID)
+        metric("LAST SCAN",    self._tv_scan, FG_MID)
 
-        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(0, 10))
+        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(2, 10))
 
         Label(p, text="RUNTIME MON", bg=BG_TELEM, fg=FG_DIM,
               font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
         self._monitor_label = Label(
             p, textvariable=self._tv_monitor,
             bg=BG_TELEM, fg=FG_DIM,
-            font=("Consolas", 11, "bold"), anchor="w",
+            font=("Consolas", 10, "bold"), anchor="w",
         )
-        self._monitor_label.pack(fill="x", padx=14, pady=(0, 10))
+        self._monitor_label.pack(fill="x", padx=14, pady=(0, 8))
 
-        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(0, 10))
-
-        # Engine info at bottom
+        # Engine — anchor bottom
+        Frame(p, bg=BG_TELEM).pack(fill="both", expand=True)  # spacer
+        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12)
         engine_str = f"psutil {psutil.__version__}" if PSUTIL_AVAILABLE else "tasklist"
         Label(p, text="ENGINE", bg=BG_TELEM, fg=FG_DIM,
-              font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
+              font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(6, 1))
         Label(p, text=engine_str, bg=BG_TELEM, fg=FG_MID,
-              font=("Consolas", 9), anchor="w").pack(fill="x", padx=14)
+              font=("Consolas", 8), anchor="w").pack(fill="x", padx=14, pady=(0, 10))
 
     def _update_telemetry(self):
         """Refresh telemetry sidebar values from runtime panel data."""
@@ -1054,7 +1054,7 @@ class PortProcessManager:
     # ------------------------------------------------------------------
     def _build_top_section(self):
         top = Frame(self.port_left, bg=BG_PANEL, padx=12, pady=10)
-        top.pack(fill="x", padx=10, pady=(10, 4))
+        top.pack(fill="x", padx=8, pady=(10, 4))
 
         Label(top, text="Port:", bg=BG_PANEL, fg=FG_TEXT,
               font=("Segoe UI", 11, "bold")).pack(side="left", padx=(0, 8))
@@ -1082,8 +1082,8 @@ class PortProcessManager:
                           bg=BTN_QUICK, hover=BTN_QUICK_HV).pack(side="right", padx=(0, 10))
 
     def _build_scanner_panel(self):
-        outer = Frame(self.port_left, bg=BG_DARK, padx=10, pady=2)
-        outer.pack(fill="x", padx=10)
+        outer = Frame(self.port_left, bg=BG_DARK, padx=8, pady=2)
+        outer.pack(fill="x", padx=8)
 
         toolbar = Frame(outer, bg=BG_DARK)
         toolbar.pack(fill="x", pady=(0, 4))
@@ -1135,8 +1135,8 @@ class PortProcessManager:
         self.scan_tree.bind("<Return>",   self._on_scan_row_select)
 
     def _build_action_buttons(self):
-        actions = Frame(self.port_left, bg=BG_DARK, padx=12, pady=8)
-        actions.pack(fill="x", padx=10)
+        actions = Frame(self.port_left, bg=BG_DARK, padx=8, pady=8)
+        actions.pack(fill="x", padx=8)
 
         self._make_button(actions, "1) Find PID",       self.find_pid,
                           bg=ACCENT, hover=ACCENT_HOVER, width=18).pack(side="left", padx=4)
@@ -1150,12 +1150,12 @@ class PortProcessManager:
     def _build_output_area(self):
         # Section label
         log_header_row = Frame(self.port_left, bg=BG_DARK)
-        log_header_row.pack(fill="x", padx=22, pady=(4, 0))
+        log_header_row.pack(fill="x", padx=16, pady=(4, 0))
         Label(log_header_row, text="ACTIVITY LOG", bg=BG_DARK, fg=FG_DIM,
               font=("Consolas", 8, "bold")).pack(side="left")
 
         wrapper = Frame(self.port_left, bg=BG_DARK)
-        wrapper.pack(fill="both", expand=True, padx=22, pady=(2, 6))
+        wrapper.pack(fill="both", expand=True, padx=16, pady=(2, 8))
 
         self.output = Text(
             wrapper, wrap="word", bg=BG_OUTPUT, fg=FG_TEXT,
