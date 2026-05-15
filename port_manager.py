@@ -883,9 +883,25 @@ class PortProcessManager:
 
         self._setup_styles()
 
-        # Notebook
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True, padx=6, pady=6)
+        # Root split: persistent ops panel (left) + content area (right)
+        self._outer = Frame(root, bg=BG_DARK)
+        self._outer.pack(fill="both", expand=True)
+
+        self.ops_panel = Frame(self._outer, bg=BG_TELEM, width=185)
+        self.ops_panel.pack_propagate(False)
+        self.ops_panel.pack(side="left", fill="y")
+
+        Frame(self._outer, bg="#2a2a2c", width=1).pack(side="left", fill="y")
+
+        self.right_area = Frame(self._outer, bg=BG_DARK)
+        self.right_area.pack(side="left", fill="both", expand=True)
+
+        # Status bar anchored to bottom of right_area (packed before notebook)
+        self._build_status_bar()
+
+        # Notebook fills right_area
+        self.notebook = ttk.Notebook(self.right_area)
+        self.notebook.pack(fill="both", expand=True, padx=6, pady=(6, 4))
 
         self.port_tab = Frame(self.notebook, bg=BG_DARK)
         self.notebook.add(self.port_tab, text="  Port Scanner  ")
@@ -893,32 +909,19 @@ class PortProcessManager:
         self.runtime_tab = Frame(self.notebook, bg=BG_DARK)
         self.notebook.add(self.runtime_tab, text="  Runtime Inspector  ")
 
-        # Status bar goes into port_tab first (reserves bottom space before content fill)
-        self._build_status_bar()
+        # Port Scanner content fills port_tab directly
+        self.port_left = Frame(self.port_tab, bg=BG_DARK)
+        self.port_left.pack(fill="both", expand=True)
 
-        # Horizontal content split: left (ops panel) + right (scanner content)
-        self.port_content = Frame(self.port_tab, bg=BG_DARK)
-        self.port_content.pack(fill="both", expand=True)
-
-        self.port_right = Frame(self.port_content, bg=BG_TELEM, width=185)
-        self.port_right.pack_propagate(False)
-        self.port_right.pack(side="left", fill="y")
-
-        Frame(self.port_content, bg="#2a2a2c", width=1).pack(side="left", fill="y")
-
-        self.port_left = Frame(self.port_content, bg=BG_DARK)
-        self.port_left.pack(side="left", fill="both", expand=True)
-
-        # Build Port Scanner UI into port_left
         self._build_top_section()
         self._build_scanner_panel()
         self._build_action_buttons()
         self._build_output_area()
 
-        # Build telemetry sidebar into port_right
+        # Persistent ops panel (global across tabs)
         self._build_telemetry_panel()
 
-        # Build Runtime Inspector
+        # Runtime Inspector
         self.runtime_panel = RuntimeInspectorPanel(self.runtime_tab, self)
 
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_change)
@@ -977,7 +980,7 @@ class PortProcessManager:
     # Telemetry sidebar
     # ------------------------------------------------------------------
     def _build_telemetry_panel(self):
-        p = self.port_right
+        p = self.ops_panel
 
         # Identity header
         Label(p, text="TASKKILLER", bg=BG_TELEM, fg="#2d3840",
@@ -1181,7 +1184,7 @@ class PortProcessManager:
                                       font=("Consolas", 10, "bold"))
 
     def _build_status_bar(self):
-        bar = Frame(self.port_tab, bg=BG_PANEL, padx=12, pady=5)
+        bar = Frame(self.right_area, bg=BG_PANEL, padx=12, pady=5)
         bar.pack(fill="x", side="bottom")
 
         # Colored status dot indicator
