@@ -888,7 +888,7 @@ class PortProcessManager:
         self._outer = Frame(root, bg=BG_DARK)
         self._outer.pack(fill="both", expand=True)
 
-        self.ops_panel = Frame(self._outer, bg=BG_TELEM, width=185)
+        self.ops_panel = Frame(self._outer, bg=BG_TELEM, width=210)
         self.ops_panel.pack_propagate(False)
         self.ops_panel.pack(side="left", fill="y")
 
@@ -984,7 +984,7 @@ class PortProcessManager:
     def _load_panel_assets(self) -> None:
         """Load header/radar images. Pillow for scaling+variants; PhotoImage fallback."""
         self._head_imgs: list = []   # [normal] or [normal, dim] for flicker
-        self._radar_imgs: list = []  # 1–4 brightness frames for pulse
+        self._radar_imgs: list = []  # 1–4 very-dim frames for atmospheric pulse
         self._radar_idx: int = 0
 
         base       = Path(__file__).parent / "assets" / "images"
@@ -996,24 +996,25 @@ class PortProcessManager:
 
             if head_path.exists():
                 img = Image.open(head_path).convert("RGBA")
-                h   = int(img.height * 185 / img.width)
-                img = img.resize((185, h), Image.LANCZOS)
+                h   = int(img.height * 210 / img.width)
+                img = img.resize((210, h), Image.LANCZOS)
                 enh = ImageEnhance.Brightness(img)
                 self._head_imgs = [
                     ImageTk.PhotoImage(img),
-                    ImageTk.PhotoImage(enh.enhance(0.72)),  # dim for flicker
+                    ImageTk.PhotoImage(enh.enhance(0.70)),  # dim for flicker
                 ]
 
             if radar_path.exists():
-                size = 155
+                size = 170  # fits 210px panel with ~20px margins each side
                 img  = Image.open(radar_path).convert("RGBA")
                 img  = img.resize((size, size), Image.LANCZOS)
                 enh  = ImageEnhance.Brightness(img)
+                # Very dim — atmospheric texture, not a featured image
                 self._radar_imgs = [
-                    ImageTk.PhotoImage(enh.enhance(0.85)),
-                    ImageTk.PhotoImage(img),
-                    ImageTk.PhotoImage(enh.enhance(1.12)),
-                    ImageTk.PhotoImage(img),
+                    ImageTk.PhotoImage(enh.enhance(0.18)),
+                    ImageTk.PhotoImage(enh.enhance(0.22)),
+                    ImageTk.PhotoImage(enh.enhance(0.26)),
+                    ImageTk.PhotoImage(enh.enhance(0.22)),
                 ]
             return
         except ImportError:
@@ -1024,25 +1025,25 @@ class PortProcessManager:
         try:
             if head_path.exists():
                 raw    = _tk.PhotoImage(file=str(head_path))
-                factor = max(1, -(-raw.width() // 185))  # ceiling div
+                factor = max(1, -(-raw.width() // 210))  # ceiling div
                 self._head_imgs = [raw.subsample(factor, factor) if factor > 1 else raw]
         except Exception:
             pass
         try:
             if radar_path.exists():
                 raw    = _tk.PhotoImage(file=str(radar_path))
-                factor = max(1, -(-raw.width() // 155))
+                factor = max(1, -(-raw.width() // 170))
                 self._radar_imgs = [raw.subsample(factor, factor) if factor > 1 else raw]
         except Exception:
             pass
 
     def _pulse_radar(self) -> None:
-        """Cycle radar brightness frames — slow atmospheric pulse, ~1.8s per step."""
+        """Cycle radar brightness frames — slow atmospheric pulse, ~2.4s per step."""
         if not self._radar_imgs or not hasattr(self, "_radar_lbl"):
             return
         self._radar_idx = (self._radar_idx + 1) % len(self._radar_imgs)
         self._radar_lbl.config(image=self._radar_imgs[self._radar_idx])
-        self.root.after(1800, self._pulse_radar)
+        self.root.after(2400, self._pulse_radar)
 
     def _flicker_header(self) -> None:
         """Occasional 80ms brightness dip on header — subtle CRT flicker."""
@@ -1062,7 +1063,7 @@ class PortProcessManager:
     def _build_telemetry_panel(self):
         p = self.ops_panel
 
-        # Header image (branding banner)
+        # ── Branding banner ─────────────────────────────────────────────
         if self._head_imgs:
             self._head_lbl = Label(p, image=self._head_imgs[0], bg=BG_TELEM, bd=0)
             self._head_lbl.pack(fill="x")
@@ -1072,28 +1073,22 @@ class PortProcessManager:
             Label(p, text="TASKKILLER 3000", bg=BG_TELEM, fg="#2d3840",
                   font=("Consolas", 11, "bold"), anchor="w").pack(fill="x", padx=12, pady=(12, 0))
             Label(p, text="RUNTIME OPERATIONS MONITOR", bg=BG_TELEM, fg=FG_DIM,
-                  font=("Consolas", 6, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 4))
+                  font=("Consolas", 6, "bold"), anchor="w").pack(fill="x", padx=12, pady=(0, 2))
 
-        Frame(p, bg="#1a2820", height=1).pack(fill="x")
+        # Barely-visible section marker — not a hard separator
+        Label(p, text="OPS CONSOLE", bg=BG_TELEM, fg="#2e3840",
+              font=("Consolas", 6, "bold"), anchor="w").pack(fill="x", padx=14, pady=(5, 0))
+        Frame(p, bg="#252830", height=1).pack(fill="x", pady=(3, 10))
 
-        # Radar image (atmospheric, pulsing when Pillow available)
-        if self._radar_imgs:
-            self._radar_lbl = Label(p, image=self._radar_imgs[0], bg=BG_TELEM, bd=0)
-            self._radar_lbl.pack(pady=(6, 4))
-            if len(self._radar_imgs) > 1:
-                self.root.after(1800, self._pulse_radar)
-
-        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(4, 6))
-
-        Label(p, text="OPS CONSOLE", bg=BG_TELEM, fg=FG_DIM,
-              font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 6))
-
+        # ── Telemetry metrics ────────────────────────────────────────────
         def metric(label: str, var: StringVar, val_color: str = "#2ecc71") -> Label:
-            Label(p, text=label, bg=BG_TELEM, fg=FG_DIM,
-                  font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
-            lbl = Label(p, textvariable=var, bg=BG_TELEM, fg=val_color,
+            row = Frame(p, bg=BG_TELEM)
+            row.pack(fill="x", padx=14, pady=(0, 7))
+            Label(row, text=label, bg=BG_TELEM, fg=FG_DIM,
+                  font=("Consolas", 7, "bold"), anchor="w").pack(fill="x")
+            lbl = Label(row, textvariable=var, bg=BG_TELEM, fg=val_color,
                         font=("Consolas", 13, "bold"), anchor="w")
-            lbl.pack(fill="x", padx=14, pady=(0, 7))
+            lbl.pack(fill="x")
             return lbl
 
         metric("NODE.JS",      self._tv_node,   "#2ecc71")
@@ -1101,12 +1096,12 @@ class PortProcessManager:
         metric("PORTS ACTIVE", self._tv_ports,   ACCENT)
         self._orphan_label = metric("ORPHANED",  self._tv_orphan, "#2ecc71")
 
-        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(2, 7))
+        Frame(p, bg="#252830", height=1).pack(fill="x", padx=12, pady=(2, 8))
 
         metric("AUTO-REFRESH", self._tv_auto, FG_MID)
         metric("LAST SCAN",    self._tv_scan, FG_MID)
 
-        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12, pady=(2, 7))
+        Frame(p, bg="#252830", height=1).pack(fill="x", padx=12, pady=(2, 8))
 
         Label(p, text="RUNTIME MON", bg=BG_TELEM, fg=FG_DIM,
               font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(0, 1))
@@ -1115,16 +1110,26 @@ class PortProcessManager:
             bg=BG_TELEM, fg=FG_DIM,
             font=("Consolas", 10, "bold"), anchor="w",
         )
-        self._monitor_label.pack(fill="x", padx=14, pady=(0, 7))
+        self._monitor_label.pack(fill="x", padx=14, pady=(0, 6))
 
-        # Engine anchored to bottom
-        Frame(p, bg=BG_TELEM).pack(fill="both", expand=True)
-        Frame(p, bg="#303035", height=1).pack(fill="x", padx=12)
+        # ── Atmospheric radar — very dim, bottom of panel ────────────────
+        # Acts as visual texture/base, not a featured image.
+        # No separators above — flows naturally from content above.
+        Frame(p, bg=BG_TELEM).pack(fill="both", expand=True)  # spacer pushes to bottom
+
+        if self._radar_imgs:
+            self._radar_lbl = Label(p, image=self._radar_imgs[0], bg=BG_TELEM, bd=0)
+            self._radar_lbl.pack(pady=(4, 0))
+            if len(self._radar_imgs) > 1:
+                self.root.after(2400, self._pulse_radar)
+
+        # ── Engine ───────────────────────────────────────────────────────
+        Frame(p, bg="#252830", height=1).pack(fill="x")
         engine_str = f"psutil {psutil.__version__}" if PSUTIL_AVAILABLE else "tasklist"
         Label(p, text="ENGINE", bg=BG_TELEM, fg=FG_DIM,
-              font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(6, 1))
+              font=("Consolas", 7, "bold"), anchor="w").pack(fill="x", padx=14, pady=(5, 1))
         Label(p, text=engine_str, bg=BG_TELEM, fg=FG_MID,
-              font=("Consolas", 8), anchor="w").pack(fill="x", padx=14, pady=(0, 10))
+              font=("Consolas", 8), anchor="w").pack(fill="x", padx=14, pady=(0, 8))
 
     def _update_telemetry(self):
         """Refresh telemetry sidebar values from runtime panel data."""
