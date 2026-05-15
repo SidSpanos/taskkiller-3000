@@ -3,8 +3,8 @@ TaskKiller 3000
 ====================
 A Windows desktop utility for process management and developer environment intelligence.
 
-- Port Scanner:    identify and kill processes listening on localhost ports
-- Node Inspector:  inspect, understand, and control Node.js dev processes
+- Port Scanner:       identify and kill processes listening on localhost ports
+- Runtime Inspector:  inspect and control dev runtime processes (Node.js, Python)
 
 Requires: Python 3.10+, tkinter (bundled with Python), psutil (optional but recommended)
 
@@ -93,7 +93,7 @@ PROTECTED_PROCESSES = frozenset({
     "sihost.exe", "fontdrvhost.exe",
 })
 
-# Script patterns checked in order — first match wins
+# Node.js script type patterns — first match wins
 NODE_SCRIPT_PATTERNS: dict[str, str] = {
     "mcp":       "MCP Server",
     "vite":      "Vite",
@@ -121,6 +121,30 @@ NODE_SCRIPT_PATTERNS: dict[str, str] = {
     "tsc":       "TypeScript",
 }
 
+# Python dev workflow patterns — first match wins
+PYTHON_SCRIPT_PATTERNS: dict[str, str] = {
+    "uvicorn":     "Uvicorn",
+    "gunicorn":    "Gunicorn",
+    "hypercorn":   "Hypercorn",
+    "daphne":      "Daphne",
+    "streamlit":   "Streamlit",
+    "gradio":      "Gradio",
+    "jupyter":     "Jupyter",
+    "notebook":    "Jupyter",
+    "lab":         "JupyterLab",
+    "flask":       "Flask",
+    "fastapi":     "FastAPI",
+    "django":      "Django",
+    "manage.py":   "Django",
+    "celery":      "Celery",
+    "pytest":      "pytest",
+    "mkdocs":      "MkDocs",
+    "huggingface": "HuggingFace",
+    "diffusers":   "Diffusers",
+    "langchain":   "LangChain",
+    "llm":         "LLM",
+}
+
 
 # ---------------------------------------------------------------------------
 # Process data model
@@ -142,6 +166,8 @@ class ProcessInfo:
     is_orphaned:  bool
     is_zombie:    bool
     children:     list[int]
+    runtime:      str = "Unknown"
+    venv:         str = ""
 
     @property
     def status_display(self) -> str:
@@ -157,27 +183,30 @@ class ProcessInfo:
 
 
 # ---------------------------------------------------------------------------
-# Modular inspector base — subclass to add Python / Ollama / Docker / etc.
+# Modular inspector base class
+# Subclass: set PROCESS_NAMES, SCRIPT_PATTERNS, RUNTIME_LABEL, DEFAULT_LABEL.
+# Override should_include(), _detect_project(), _detect_venv() as needed.
 # ---------------------------------------------------------------------------
 class DevProcessInspector:
-    """
-    Override PROCESS_NAMES and SCRIPT_PATTERNS to create a new inspector type.
-    Each subclass handles one process family (node, python, ollama, docker…).
-    """
-    PROCESS_NAMES:  tuple[str, ...] = ()
-    SCRIPT_PATTERNS: dict[str, str] = {}
-    DEFAULT_LABEL:  str = "Process"
+    PROCESS_NAMES:   tuple[str, ...] = ()
+    SCRIPT_PATTERNS: dict[str, str]  = {}
+    RUNTIME_LABEL:   str = "Unknown"
+    DEFAULT_LABEL:   str = "Process"
 
     def __init__(self):
         # Persistent Process objects so cpu_percent(interval=None) accumulates
         self._cpu_procs: dict[int, "psutil.Process"] = {}
 
+    def should_include(self, info: ProcessInfo) -> bool:
+        """Return False to hide a process from the Runtime Inspector table."""
+        return True
+
     def collect(self, port_map: dict[int, list[str]]) -> list[ProcessInfo]:
         if not PSUTIL_AVAILABLE:
             return []
 
-        results: list[ProcessInfo] = []
-        found_pids: set[int] = set()
+        results:    list[ProcessInfo] = []
+        found_pids: set[int]          = set()
 
         try:
             all_pids = {p.pid for p in psutil.process_iter(["pid"])}
@@ -193,11 +222,11 @@ class DevProcessInspector:
                 if pid not in self._cpu_procs:
                     self._cpu_procs[pid] = proc
                     try:
-                        proc.cpu_percent(interval=None)  # seed; returns 0.0
+                        proc.cpu_percent(interval=None)  # seed; first call returns 0.0
                     except Exception:
                         pass
                 info = self._gather(self._cpu_procs[pid], port_map, all_pids)
-                if info:
+                if info and self.should_include(info):
                     results.append(info)
             except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
                 continue
@@ -242,9 +271,14 @@ class DevProcessInspector:
                 is_orphaned=(ppid != 0 and ppid not in all_pids),
                 is_zombie=(proc_status == "zombie"),
                 children=children,
+                runtime=self.RUNTIME_LABEL,
+                venv=self._detect_venv(exe, cwd),
             )
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return None
+
+    def _detect_venv(self, exe: str, cwd: str) -> str:
+        return ""
 
     def _detect_project(self, cwd: str) -> str:
         if not cwd:
@@ -280,25 +314,105 @@ class DevProcessInspector:
 # ---------------------------------------------------------------------------
 class NodeInspector(DevProcessInspector):
     PROCESS_NAMES   = ("node.exe", "node")
+    RUNTIME_LABEL   = "Node.js"
     DEFAULT_LABEL   = "Node.js"
     SCRIPT_PATTERNS = NODE_SCRIPT_PATTERNS
 
 
 # ---------------------------------------------------------------------------
-# Node Inspector UI panel
+# Python inspector
 # ---------------------------------------------------------------------------
-class NodeInspectorPanel:
+class PythonInspector(DevProcessInspector):
+    PROCESS_NAMES   = ("python.exe", "python3.exe", "python", "python3")
+    RUNTIME_LABEL   = "Python"
+    DEFAULT_LABEL   = "Python"
+    SCRIPT_PATTERNS = PYTHON_SCRIPT_PATTERNS
+
+    def should_include(self, info: ProcessInfo) -> bool:
+        # Surface only Python processes with listening ports or a recognized dev pattern.
+        # Avoids flooding the table with every incidental python.exe on the machine.
+        return bool(info.ports) or info.script_type != self.DEFAULT_LABEL
+
+    def _detect_venv(self, exe: str, cwd: str) -> str:
+        if not exe:
+            return ""
+        try:
+            p = Path(exe)
+            # Walk up from the executable looking for pyvenv.cfg (marks venv root)
+            for candidate in (p.parent, p.parent.parent, p.parent.parent.parent):
+                if (candidate / "pyvenv.cfg").exists():
+                    return candidate.name
+            # Fallback: check path components for common venv directory names
+            for part in p.parts:
+                low = part.lower()
+                if low in (".venv", "venv", "env", ".env"):
+                    return part
+                if "venv" in low and part not in ("", "\\", "/"):
+                    return part
+        except Exception:
+            pass
+        return ""
+
+    def _detect_project(self, cwd: str) -> str:
+        if not cwd:
+            return "<unknown>"
+        try:
+            p = Path(cwd)
+            for candidate in (p, p.parent, p.parent.parent):
+                # pyproject.toml — [project] name = "..."
+                try:
+                    ppt = candidate / "pyproject.toml"
+                    if ppt.exists():
+                        content = ppt.read_text(encoding="utf-8", errors="ignore")
+                        m = re.search(
+                            r'^\s*name\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE
+                        )
+                        if m:
+                            return m.group(1).strip()
+                except Exception:
+                    pass
+                # setup.cfg — [metadata] name = ...
+                try:
+                    scfg = candidate / "setup.cfg"
+                    if scfg.exists():
+                        content = scfg.read_text(encoding="utf-8", errors="ignore")
+                        m = re.search(r'^\s*name\s*=\s*(.+)$', content, re.MULTILINE)
+                        if m:
+                            name = m.group(1).split(";")[0].strip()
+                            if name:
+                                return name
+                except Exception:
+                    pass
+                # package.json as fallback (monorepo setups)
+                try:
+                    pkg = candidate / "package.json"
+                    if pkg.exists():
+                        data = json.loads(pkg.read_text(encoding="utf-8", errors="ignore"))
+                        name = (data.get("name") or "").strip()
+                        if name:
+                            return name
+                except Exception:
+                    pass
+            return p.name or "<unknown>"
+        except Exception:
+            return "<unknown>"
+
+
+# ---------------------------------------------------------------------------
+# Runtime Inspector UI panel — Node.js + Python in one unified table
+# ---------------------------------------------------------------------------
+class RuntimeInspectorPanel:
 
     def __init__(self, parent: Frame, app: "PortProcessManager"):
-        self.parent    = parent
-        self.app       = app
-        self.root      = app.root
-        self.inspector = NodeInspector()
+        self.parent     = parent
+        self.app        = app
+        self.root       = app.root
+        self.inspectors = [NodeInspector(), PythonInspector()]
         self.processes: list[ProcessInfo] = []
         self._auto_var  = IntVar(value=0)
         self._auto_job  = None
         self._port_map: dict[int, list[str]] = {}
-        self._sort_col  = "pid"
+        self._sort_col  = "runtime"
         self._sort_rev  = False
         self._build_ui()
 
@@ -310,14 +424,14 @@ class NodeInspectorPanel:
         toolbar.pack(fill="x")
 
         Label(
-            toolbar, text="Node.js Process Inspector",
+            toolbar, text="Runtime Inspector",
             bg=BG_PANEL, fg=FG_TEXT, font=("Segoe UI", 11, "bold"),
         ).pack(side="left", padx=(0, 16))
 
-        self._btn(toolbar, "Refresh",       self.refresh,         ACCENT,     ACCENT_HOVER ).pack(side="left", padx=(0, 4))
-        self._btn(toolbar, "Safe Stop",     self._safe_stop,      BTN_VERIFY, BTN_VERIFY_HV).pack(side="left", padx=4)
-        self._btn(toolbar, "Force Kill",    self._force_kill,     BTN_KILL,   BTN_KILL_HVR ).pack(side="left", padx=4)
-        self._btn(toolbar, "Kill All Node", self._kill_all_node,  BTN_KILL,   BTN_KILL_HVR ).pack(side="left", padx=4)
+        self._btn(toolbar, "Refresh",       self.refresh,        ACCENT,     ACCENT_HOVER ).pack(side="left", padx=(0, 4))
+        self._btn(toolbar, "Safe Stop",     self._safe_stop,     BTN_VERIFY, BTN_VERIFY_HV).pack(side="left", padx=4)
+        self._btn(toolbar, "Force Kill",    self._force_kill,    BTN_KILL,   BTN_KILL_HVR ).pack(side="left", padx=4)
+        self._btn(toolbar, "Kill All Node", self._kill_all_node, BTN_KILL,   BTN_KILL_HVR ).pack(side="left", padx=4)
 
         Checkbutton(
             toolbar, text="Auto (3s)", variable=self._auto_var,
@@ -333,36 +447,38 @@ class NodeInspectorPanel:
             bg=BG_PANEL, fg=FG_DIM, font=("Segoe UI", 9),
         ).pack(side="right", padx=4)
 
-        # Paned: treeview (top) + detail (bottom)
+        # Paned: treeview (top) + detail panel (bottom)
         paned = ttk.PanedWindow(self.parent, orient="vertical")
         paned.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
         tree_frame = Frame(paned, bg=BG_DARK)
         paned.add(tree_frame, weight=3)
 
-        cols = ("pid", "ppid", "status", "ports", "cpu", "ram",
+        cols = ("runtime", "pid", "ppid", "status", "ports", "cpu", "ram",
                 "project", "script", "cwd")
         self.tree = ttk.Treeview(
             tree_frame, columns=cols, show="headings",
             style="Dashboard.Treeview", selectmode="browse",
         )
         for cid, heading, width, anchor in (
-            ("pid",     "PID",        65,  "center"),
-            ("ppid",    "PPID",       65,  "center"),
-            ("status",  "Status",     90,  "center"),
-            ("ports",   "Port(s)",    90,  "center"),
-            ("cpu",     "CPU%",       60,  "center"),
-            ("ram",     "RAM MB",     70,  "center"),
-            ("project", "Project",   150,  "w"),
-            ("script",  "Script",    110,  "center"),
-            ("cwd",     "Working Dir", 280, "w"),
+            ("runtime", "Runtime",      80,  "center"),
+            ("pid",     "PID",          65,  "center"),
+            ("ppid",    "PPID",         65,  "center"),
+            ("status",  "Status",       90,  "center"),
+            ("ports",   "Port(s)",      90,  "center"),
+            ("cpu",     "CPU%",         60,  "center"),
+            ("ram",     "RAM MB",       70,  "center"),
+            ("project", "Project",     140,  "w"),
+            ("script",  "Script",      110,  "center"),
+            ("cwd",     "Working Dir", 260,  "w"),
         ):
             self.tree.heading(cid, text=heading,
                               command=lambda c=cid: self._sort_by(c))
             self.tree.column(cid, width=width, minwidth=50,
                              anchor=anchor, stretch=(cid == "cwd"))
 
-        self.tree.tag_configure("running",  foreground="#2ecc71")
+        self.tree.tag_configure("node_ok",  foreground="#2ecc71")
+        self.tree.tag_configure("py_ok",    foreground="#3498db")
         self.tree.tag_configure("orphaned", foreground="#f1c40f")
         self.tree.tag_configure("zombie",   foreground="#e74c3c")
 
@@ -404,6 +520,7 @@ class NodeInspectorPanel:
             ("error",  "#e74c3c", False),
             ("header", ACCENT,    True),
             ("dim",    FG_DIM,    False),
+            ("pyblue", "#3498db", False),
         ):
             self.detail.tag_configure(
                 tag, foreground=fg,
@@ -431,16 +548,24 @@ class NodeInspectorPanel:
     # ------------------------------------------------------------------
     def refresh(self):
         self._port_map = self._build_port_map()
-        self.processes = self.inspector.collect(self._port_map)
+        self.processes = []
+        for inspector in self.inspectors:
+            self.processes.extend(inspector.collect(self._port_map))
+
         self._populate_tree()
 
-        count   = len(self.processes)
-        orphans = sum(1 for p in self.processes if p.is_orphaned)
-        zombies = sum(1 for p in self.processes if p.is_zombie)
-        ts      = datetime.now().strftime("%H:%M:%S")
-        parts   = [f"{count} process{'es' if count != 1 else ''}"]
-        if orphans: parts.append(f"{orphans} orphaned")
-        if zombies: parts.append(f"{zombies} zombie")
+        node_count = sum(1 for p in self.processes if p.runtime == "Node.js")
+        py_count   = sum(1 for p in self.processes if p.runtime == "Python")
+        orphans    = sum(1 for p in self.processes if p.is_orphaned)
+        zombies    = sum(1 for p in self.processes if p.is_zombie)
+        ts         = datetime.now().strftime("%H:%M:%S")
+
+        parts: list[str] = []
+        if node_count: parts.append(f"{node_count} Node")
+        if py_count:   parts.append(f"{py_count} Python")
+        if not parts:  parts.append("0 processes")
+        if orphans:    parts.append(f"{orphans} orphaned")
+        if zombies:    parts.append(f"{zombies} zombie")
         self._status_var.set("  |  ".join(parts) + f"  —  {ts}")
 
     def _build_port_map(self) -> dict[int, list[str]]:
@@ -479,10 +604,20 @@ class NodeInspectorPanel:
         sel_pid = int(sel[0]) if sel else None
         self.tree.delete(*self.tree.get_children())
 
-        for p in sorted(self.processes, key=lambda x: x.pid):
-            tag     = "zombie" if p.is_zombie else ("orphaned" if p.is_orphaned else "running")
-            cwd_d   = ("..." + p.cwd[-47:]) if len(p.cwd) > 50 else p.cwd
+        # Sort: runtime first (Node before Python), then pid
+        for p in sorted(self.processes, key=lambda x: (x.runtime, x.pid)):
+            if p.is_zombie:
+                tag = "zombie"
+            elif p.is_orphaned:
+                tag = "orphaned"
+            elif p.runtime == "Python":
+                tag = "py_ok"
+            else:
+                tag = "node_ok"
+
+            cwd_d = ("..." + p.cwd[-47:]) if len(p.cwd) > 50 else p.cwd
             self.tree.insert("", "end", iid=str(p.pid), values=(
+                p.runtime,
                 p.pid, p.ppid, p.status_display,
                 ", ".join(p.ports) if p.ports else "—",
                 f"{p.cpu_percent:.1f}%",
@@ -534,18 +669,22 @@ class NodeInspectorPanel:
 
         self.detail.insert(END, f"  PID {p.pid}  —  {p.name}  [{p.script_type}]\n\n", "header")
 
+        runtime_tag = "pyblue" if p.runtime == "Python" else "ok"
+        kv("Runtime:",        p.runtime, runtime_tag)
         status_tag = "error" if p.is_zombie else ("warn" if p.is_orphaned else "ok")
-        kv("Status:",       p.status_display, status_tag)
-        kv("PID:",          str(p.pid))
-        kv("Parent PID:",   str(p.ppid))
+        kv("Status:",         p.status_display, status_tag)
+        kv("PID:",            str(p.pid))
+        kv("Parent PID:",     str(p.ppid))
         if p.children:
             kv("Child PIDs:", ", ".join(str(c) for c in p.children))
         kv("Listening Ports:", ", ".join(p.ports) if p.ports else "none")
-        kv("CPU:",          f"{p.cpu_percent:.2f}%")
-        kv("RAM:",          f"{p.ram_mb:.1f} MB")
-        kv("Project:",      p.project_name)
-        kv("Working Dir:",  p.cwd or "<unknown>")
-        kv("Executable:",   p.exe or "<unknown>")
+        kv("CPU:",            f"{p.cpu_percent:.2f}%")
+        kv("RAM:",            f"{p.ram_mb:.1f} MB")
+        if p.venv:
+            kv("Virtual Env:", p.venv, "pyblue")
+        kv("Project:",        p.project_name)
+        kv("Working Dir:",    p.cwd or "<unknown>")
+        kv("Executable:",     p.exe or "<unknown>")
 
         self.detail.insert(END, "\n  Command Line:\n", "key")
         self.detail.insert(END, f"  {p.cmdline_str}\n", "dim")
@@ -563,7 +702,7 @@ class NodeInspectorPanel:
 
     def _show_no_psutil(self):
         self.detail.config(state=NORMAL)
-        self.detail.insert(END, "\n  Node Inspector requires psutil.\n\n", "warn")
+        self.detail.insert(END, "\n  Runtime Inspector requires psutil.\n\n", "warn")
         self.detail.insert(END, "  Install:  ", "val")
         self.detail.insert(END, "pip install psutil\n\n", "key")
         self.detail.insert(END, "  Then restart the application.\n", "dim")
@@ -583,11 +722,12 @@ class NodeInspectorPanel:
     def _safe_stop(self):
         proc = self._get_selected()
         if not proc:
-            messagebox.showwarning("No Selection", "Select a Node process first.")
+            messagebox.showwarning("No Selection", "Select a process first.")
             return
         if not messagebox.askyesno(
             "Safe Stop",
             f"Send graceful stop to:\n\n"
+            f"  Runtime: {proc.runtime}\n"
             f"  PID:     {proc.pid}\n"
             f"  Project: {proc.project_name}\n"
             f"  Script:  {proc.script_type}\n"
@@ -615,7 +755,7 @@ class NodeInspectorPanel:
     def _force_kill(self):
         proc = self._get_selected()
         if not proc:
-            messagebox.showwarning("No Selection", "Select a Node process first.")
+            messagebox.showwarning("No Selection", "Select a process first.")
             return
         if proc.name.lower() in PROTECTED_PROCESSES:
             messagebox.showerror("Blocked", f"'{proc.name}' is a protected system process.")
@@ -623,6 +763,7 @@ class NodeInspectorPanel:
         if not messagebox.askyesno(
             "Force Kill",
             f"Forcefully terminate:\n\n"
+            f"  Runtime: {proc.runtime}\n"
             f"  PID:     {proc.pid}\n"
             f"  Project: {proc.project_name}\n"
             f"  Script:  {proc.script_type}\n"
@@ -650,7 +791,7 @@ class NodeInspectorPanel:
             messagebox.showerror("Error", str(exc))
 
     def _kill_all_node(self):
-        count = len(self.processes)
+        count = sum(1 for p in self.processes if p.runtime == "Node.js")
         if count == 0:
             messagebox.showinfo("No Processes", "No node.exe processes are running.")
             return
@@ -731,8 +872,8 @@ class PortProcessManager:
         self.port_tab = Frame(self.notebook, bg=BG_DARK)
         self.notebook.add(self.port_tab, text="  Port Scanner  ")
 
-        self.node_tab = Frame(self.notebook, bg=BG_DARK)
-        self.notebook.add(self.node_tab, text="  Node Inspector  ")
+        self.runtime_tab = Frame(self.notebook, bg=BG_DARK)
+        self.notebook.add(self.runtime_tab, text="  Runtime Inspector  ")
 
         # Build Port Scanner UI into port_tab
         self._build_top_section()
@@ -741,10 +882,10 @@ class PortProcessManager:
         self._build_output_area()
         self._build_status_bar()
 
-        # Build Node Inspector UI into node_tab
-        self.node_panel = NodeInspectorPanel(self.node_tab, self)
+        # Build Runtime Inspector into runtime_tab
+        self.runtime_panel = RuntimeInspectorPanel(self.runtime_tab, self)
 
-        # Lazy-load Node Inspector on first visit
+        # Lazy-load Runtime Inspector on first visit
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_change)
 
         self.log("TaskKiller 3000 started.", level="INFO")
@@ -757,8 +898,8 @@ class PortProcessManager:
 
     def _on_tab_change(self, _event=None):
         idx = self.notebook.index(self.notebook.select())
-        if idx == 1 and not self.node_panel.processes:
-            self.root.after(50, self.node_panel.refresh)
+        if idx == 1 and not self.runtime_panel.processes:
+            self.root.after(50, self.runtime_panel.refresh)
 
     # ------------------------------------------------------------------
     # Styles
@@ -886,13 +1027,13 @@ class PortProcessManager:
         actions = Frame(self.port_tab, bg=BG_DARK, padx=12, pady=8)
         actions.pack(fill="x", padx=10)
 
-        self._make_button(actions, "1) Find PID",      self.find_pid,
+        self._make_button(actions, "1) Find PID",       self.find_pid,
                           bg=ACCENT, hover=ACCENT_HOVER, width=18).pack(side="left", padx=4)
         self._make_button(actions, "2) Verify Process", self.verify_process,
                           bg=BTN_VERIFY, hover=BTN_VERIFY_HV, width=18).pack(side="left", padx=4)
-        self._make_button(actions, "3) Kill Process",  self.kill_process,
+        self._make_button(actions, "3) Kill Process",   self.kill_process,
                           bg=BTN_KILL, hover=BTN_KILL_HVR, width=18).pack(side="left", padx=4)
-        self._make_button(actions, "Clear Output",     self.clear_output,
+        self._make_button(actions, "Clear Output",      self.clear_output,
                           bg=BTN_QUICK, hover=BTN_QUICK_HV, width=14).pack(side="right", padx=4)
 
     def _build_output_area(self):
@@ -1250,10 +1391,7 @@ class PortProcessManager:
 
     def _classify_and_warn(self, name: str):
         if self._is_protected(name):
-            self.log(
-                f"PROTECTED SYSTEM PROCESS: {name}. Do not kill.",
-                level="ERROR",
-            )
+            self.log(f"PROTECTED SYSTEM PROCESS: {name}. Do not kill.", level="ERROR")
             return
         label = self._classify_process(name)
         if label == "Browser":
@@ -1414,7 +1552,7 @@ def main():
                 root.after_cancel(app._auto_refresh_job)
             except Exception:
                 pass
-        app.node_panel.cancel_auto()
+        app.runtime_panel.cancel_auto()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)

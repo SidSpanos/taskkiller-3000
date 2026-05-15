@@ -14,11 +14,11 @@ Built with Python and Tkinter — no web stack, no Electron, no external UI fram
 
 Port scanner on startup — 8080 (`wslrelay.exe`) and 11434 (`ollama.exe`) detected as OCCUPIED. Double-click any red row to load it into the Find → Verify → Kill workflow below.
 
-### Node Inspector
+### Runtime Inspector
 
-![Node Inspector — process intelligence panel](screenshots/node-inspector.png)
+![Runtime Inspector — process intelligence panel](screenshots/node-inspector.png)
 
-Node Inspector tab showing active Node.js processes with their project names, script types (Vite, Next.js, MCP Server, etc.), listening ports, CPU/RAM usage, and parent/child relationships. Orphaned processes are highlighted in yellow.
+Runtime Inspector tab showing active Node.js and Python dev processes side-by-side. Node.js rows in green, Python rows in blue. Columns include project name, script type (Vite, Next.js, Uvicorn, Flask, MCP Server, etc.), listening ports, CPU/RAM, and virtual environment. Orphaned processes highlighted in yellow.
 
 ---
 
@@ -93,7 +93,7 @@ Double-clicking `run_port_manager.bat` also works from Explorer.
 
 ## Features
 
-The application has two tabs: **Port Scanner** and **Node Inspector**.
+The application has two tabs: **Port Scanner** and **Runtime Inspector**.
 
 ---
 
@@ -126,34 +126,34 @@ Hard blocks termination of critical Windows processes (`svchost`, `lsass`, `csrs
 
 ---
 
-### Tab 2: Node Inspector
+### Tab 2: Runtime Inspector
 
-Provides deep visibility into every running Node.js process before you decide to terminate it. Shows what each process actually is, what project owns it, and whether it is healthy.
+Unified view of all active dev runtime processes — Node.js and Python in a single table. Shows what each process actually is, what project owns it, and whether it is healthy, before you decide to terminate it.
+
+**Node.js rows are shown in green. Python rows are shown in blue.**
 
 #### Process table
 
-Each row in the table shows:
-
 | Column | Description |
 |---|---|
+| Runtime | `Node.js` or `Python` |
 | PID | Process ID |
 | PPID | Parent process ID |
 | Status | RUNNING, ORPHANED, or ZOMBIE |
 | Port(s) | Listening ports owned by this process |
 | CPU% | CPU utilisation (updated each refresh) |
 | RAM MB | Resident memory in megabytes |
-| Project | Name from `package.json`, or folder name |
-| Script | Detected script type (see list below) |
+| Project | Resolved from `package.json`, `pyproject.toml`, or `setup.cfg` |
+| Script | Detected framework or script type |
 | Working Dir | Current working directory |
 
 Click any column heading to sort ascending/descending.
 
-#### Script type detection
-
-The inspector classifies each Node process by scanning its command-line arguments:
+#### Node.js script detection
 
 | Script Type | Detected when command line contains |
 |---|---|
+| MCP Server | `mcp` |
 | Vite | `vite` |
 | Next.js | `next` |
 | Nuxt | `nuxt` |
@@ -161,7 +161,6 @@ The inspector classifies each Node process by scanning its command-line argument
 | Remix | `remix` |
 | Webpack | `webpack` |
 | Nodemon | `nodemon` |
-| MCP Server | `mcp` |
 | ts-node | `ts-node`, `tsx` |
 | Vitest | `vitest` |
 | Jest | `jest` |
@@ -176,53 +175,86 @@ The inspector classifies each Node process by scanning its command-line argument
 | esbuild | `esbuild` |
 | Node.js | (anything else) |
 
+#### Python script detection
+
+Python processes are only shown if they have listening ports **or** match a recognized dev pattern — generic `python.exe` invocations without a port or known framework are hidden to avoid noise.
+
+| Script Type | Detected when command line contains |
+|---|---|
+| Uvicorn | `uvicorn` |
+| Gunicorn | `gunicorn` |
+| Hypercorn | `hypercorn` |
+| Daphne | `daphne` |
+| Streamlit | `streamlit` |
+| Gradio | `gradio` |
+| Jupyter | `jupyter`, `notebook` |
+| JupyterLab | `lab` |
+| Flask | `flask` |
+| FastAPI | `fastapi` |
+| Django | `django`, `manage.py` |
+| Celery | `celery` |
+| pytest | `pytest` |
+| MkDocs | `mkdocs` |
+| HuggingFace | `huggingface` |
+| LangChain | `langchain` |
+| Python | (anything else with a port) |
+
+#### Virtual environment detection (Python)
+
+For Python processes, the inspector attempts to detect the active virtual environment by walking up from the executable path looking for `pyvenv.cfg` (the standard venv marker). If found, the venv directory name (e.g. `.venv`, `myenv`) is shown in the detail panel.
+
+#### Project name detection
+
+- **Node.js**: reads `package.json` → `name` field, walks up 2 directories
+- **Python**: reads `pyproject.toml` → `[project] name`, then `setup.cfg` → `[metadata] name`, then `package.json`, then falls back to the folder name
+
 #### Process detail panel
 
-Select any row to see full details in the panel below the table:
+Select any row to see:
 
-- Full command-line arguments (untruncated)
+- Runtime type and status
+- PID, parent PID, and child PIDs
 - Listening ports
-- CPU and RAM usage
-- Parent PID and child PIDs
-- Working directory and executable path
-- Project name (resolved from `package.json`)
+- CPU% and RAM
+- Virtual environment name (Python only, if detected)
+- Project name and working directory
+- Full executable path
+- Full untruncated command-line arguments
 - Warnings for orphaned or zombie status
 
 #### Orphaned process detection
 
-A process is marked **ORPHANED** (yellow) when its parent PID no longer exists. This commonly happens when:
-- A terminal or shell was closed without cleanly shutting down child processes
-- A dev server spawned child workers and the parent crashed
+A process is marked **ORPHANED** (yellow) when its parent PID no longer exists. Common causes:
+- Terminal or shell closed without shutting down child processes
+- Dev server spawned child workers and the parent crashed
 - A process manager (PM2, nodemon) exited and left workers running
-
-Orphaned processes keep holding their ports and consuming resources. The Node Inspector surfaces them so you can clean them up deliberately.
 
 #### Zombie process detection
 
-A process is marked **ZOMBIE** (red) when it has finished execution but has not been reaped by its parent. Zombie processes hold a PID slot and a port entry but are no longer doing any work. They should be cleaned up.
+A process is marked **ZOMBIE** (red) when it has finished but has not been reaped by its parent. Zombie processes hold a PID slot and port entry but are no longer executing.
 
 #### Safe Stop vs Force Kill
 
 | Action | Command | Behaviour |
 |---|---|---|
-| **Safe Stop** | `taskkill /PID <pid>` (no `/F`) | Sends a graceful exit signal. Node.js processes that handle `SIGTERM` or close events will shut down cleanly, flush logs, and release ports properly. |
+| **Safe Stop** | `taskkill /PID <pid>` (no `/F`) | Sends a graceful exit signal. Processes that handle shutdown events will flush logs and release ports cleanly. |
 | **Force Kill** | `taskkill /PID <pid> /F` | Immediately terminates the process. Use this if Safe Stop does not work within a few seconds. |
 
-Both actions show a confirmation dialog with the project name, script type, and affected ports before proceeding.
+Both actions show a confirmation dialog with runtime type, project name, script type, and affected ports before proceeding.
 
 #### Kill All Node
 
-Terminates every `node.exe` process on the machine at once (`taskkill /IM node.exe /F`). Available in both tabs. Shows a count of processes that will be affected before asking for confirmation.
+Terminates every `node.exe` process on the machine at once (`taskkill /IM node.exe /F`). Available in both tabs. Shows a count before asking for confirmation.
 
 #### Port detection
 
-Port mapping is built from `psutil.net_connections()` (LISTEN state only), with `netstat -ano` as a fallback. Each process row shows all ports it is currently listening on. A process with no open ports is shown with `—`.
+Port mapping uses `psutil.net_connections()` (LISTEN state only) with `netstat -ano` as fallback. Each process row shows all listening ports. No open port is shown as `—`.
 
 #### Auto-refresh
 
-The **Auto (3s)** checkbox enables automatic refresh every 3 seconds. CPU percentages are tracked across refreshes — the first tick shows `0.0%`, subsequent ticks show real utilisation.
+**Auto (3s)** checkbox refreshes every 3 seconds. CPU% is tracked across refreshes — first tick shows `0.0%`, real values appear after the second tick.
 
-Both tabs have independent auto-refresh controls. Killing a process in the Node Inspector automatically refreshes the Port Scanner tab.
+Killing a process in the Runtime Inspector automatically refreshes the Port Scanner tab.
 
 ---
 
@@ -279,7 +311,7 @@ Run the app as Administrator:
 
 Some system processes and services require elevated privileges to terminate.
 
-### Node Inspector shows no processes
+### Runtime Inspector shows no processes
 
 psutil is required. Install it:
 
@@ -289,9 +321,13 @@ pip install psutil
 
 Then restart the application.
 
-### Node Inspector CPU% shows 0.0% on first load
+### Runtime Inspector CPU% shows 0.0% on first load
 
-This is expected. psutil's `cpu_percent` requires two measurements to calculate a delta. Enable **Auto (3s)** and real values will appear after the first refresh tick.
+Expected. psutil's `cpu_percent` needs two measurements to calculate a delta. Enable **Auto (3s)** and real values appear after the first refresh tick.
+
+### Python processes not appearing
+
+Python processes are only shown when they have a listening port **or** match a recognized dev framework pattern (Uvicorn, Flask, Streamlit, etc.). Generic `python.exe` scripts without a port are filtered out by design.
 
 ### App shows a browser process on the port
 
@@ -332,7 +368,7 @@ taskkiller-3000/
 ├── PROJECT_STATE.md          # Project status and roadmap
 ├── screenshots/
 │   ├── main.png              # Port Scanner tab
-│   └── node-inspector.png    # Node Inspector tab
+│   └── node-inspector.png    # Runtime Inspector tab
 └── .github/
     └── workflows/
         ├── claude.yml                # Claude PR assistant
@@ -343,14 +379,14 @@ taskkiller-3000/
 
 ## Extensibility
 
-The Node Inspector is built on a modular `DevProcessInspector` base class. Adding support for a new process type (Python, Ollama, Docker, Electron, MCP servers) requires:
+The Runtime Inspector is built on a `DevProcessInspector` base class. Adding a new runtime (Ollama, Docker, Bun, Java) requires:
 
-1. Subclassing `DevProcessInspector`
-2. Setting `PROCESS_NAMES` (e.g. `("python.exe", "python")`)
-3. Setting `SCRIPT_PATTERNS` (keyword → label mapping)
-4. Adding a new tab in the notebook
+1. Subclass `DevProcessInspector`
+2. Set `PROCESS_NAMES`, `RUNTIME_LABEL`, `DEFAULT_LABEL`, `SCRIPT_PATTERNS`
+3. Optionally override `should_include()`, `_detect_project()`, `_detect_venv()`
+4. Add the new inspector instance to `RuntimeInspectorPanel.inspectors`
 
-No changes to the existing code are required.
+No changes to the UI code are required.
 
 ---
 
